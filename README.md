@@ -42,15 +42,15 @@ Open the folder in **Godot 4.4 or newer** and press Play (`demo/main.tscn`).
 | F | explode pulse |
 | V / G | toggle vibrate / wobble |
 | H | heal: carved-off points fly back into place |
-| [ / ] | halve / double the dots per point on the aimed object (1–16) |
 | - / = / 0 | less / more detail by hand, or back to automatic (targets 60 fps) |
 | F10 | switch renderer: Compatibility (default, fastest) ↔ Forward+ |
 | R | restore everything instantly |
 | F9 | smoothing filter on/off (edge-aware blend over the 3D view) |
 | Esc | free the mouse (click to recapture) |
 
-The scene holds about 3.6 million stored points drawn as about 10.8 million
-dots: ground, a morphing cube, a textured crate, monoliths, a jelly orb, the
+The scene holds about 3.5 million stored points, all drawn as beads. Up close
+each point splits into many smaller beads, so surfaces stay closed and
+smooth however near you get: ground, a morphing cube, a textured crate, monoliths, a jelly orb, the
 player and a skinned worm enemy that crawls around. Shoot the worm 15 times and it dissolves, then reassembles.
 
 ## How it works
@@ -62,7 +62,7 @@ PointSampler    (static)       mesh → points: area-weighted, takes colour from
       │  drawn by                 albedo/texture/vertex colours, copies skin weights
 PointCloud      (GeometryInstance3D)
       │  uploads data to float textures, one texel per point
-point_cloud.gdshader           draws `density` dots per point; each dot finds its point,
+point_cloud.gdshader           draws up to `max_amplification` beads per point; each finds its point,
                                applies skinning, morph, effects, debris, ripples and
                                outputs a GL point sized in world units
 ```
@@ -73,11 +73,18 @@ point_cloud.gdshader           draws `density` dots per point; each dot finds it
   keeps a constant world size. Memory doesn't grow with the dot count. Dots are
   opaque and lit (or `unshaded`), write depth and cast shadows like normal
   geometry.
-* **Solid surfaces, not dots.** Each dot is drawn as a small disc lying in
-  the surface's tangent plane. The fragment shader intersects every pixel's
-  view ray with that disc and writes the exact depth, so overlapping discs
-  fuse into one continuous surface, like real geometry. Points are spread
-  evenly (stratified per triangle plus an R2 low-discrepancy sequence).
+* **Everything is beads.** Every dot is a small round bead, at rest and in
+  flight. Resting beads overlap and are shaded with the surface's normal, so
+  together they read as one continuous surface. For each pixel the fragment
+  shader intersects the view ray with the surface plane, so texture, edges,
+  lighting and shadows are exact per pixel. Points are spread evenly
+  (stratified per triangle plus an R2 low-discrepancy sequence).
+* **Smaller beads up close.** As you get nearer, each stored point splits
+  into more, smaller beads (up to `max_amplification`, default 32), spread
+  over its patch of surface with a scrambled Halton sequence. Beads stay
+  about 2 px apart on screen at any distance, so you never see individual
+  beads or gaps, even with your face against a wall. Unneeded bead slots are
+  dropped at the top of the vertex shader, so far objects cost nothing extra.
 * **Smooth shading.** Each point stores its surface's curvature tensor,
   fitted from the source mesh's vertex normals. The shader bends the normal
   across each disc with it, which reproduces the mesh's interpolated normals,
@@ -87,11 +94,10 @@ point_cloud.gdshader           draws `density` dots per point; each dot finds it
   `surface_texture`, sampled per pixel (triplanar, mip level from the exact
   pixel footprint) and multiplied with the dot colours. The demo floor grid
   and crate use it. Dot colour alpha masks it, so interior points stay plain.
-* **Density: more dots for free.** `PointCloud.density` draws N dots per stored
-  point, spread over that point's patch of surface (a golden-angle spiral in
-  the tangent plane). Every dot has its own seed, so effects and debris act on
-  each dot separately. Sampling time, CPU memory and carve cost stay the same:
-  a 400k-point cube at density 4 is 1.6M independently moving dots.
+* **More beads for free.** The extra beads exist only on the GPU. Each one
+  has its own seed, so effects and debris act on each bead separately, while
+  sampling time, CPU memory and carve cost stay the same as for the stored
+  points.
 * **Effects cost no CPU.** Vibrate, wobble, explode, dissolve, morph and ripples
   are shader uniforms. Every point gets a stable random seed from a hash of its
   index, which is what makes the motion look per-point.
@@ -107,9 +113,9 @@ point_cloud.gdshader           draws `density` dots per point; each dot finds it
   few frames and then starts. Targets stay cached on the GPU, and finishing a
   morph swaps textures instead of re-uploading. `prepare_morph_target()`
   warms the cache ahead of time.
-* **Dots in flight look like beads.** Debris, dissolving, exploding and
-  mid-morph dots are drawn as small round dots with sphere-like shading
-  instead of flat surface discs.
+* **Beads in flight look like little spheres.** Debris, dissolving,
+  exploding and mid-morph beads blend from surface shading to sphere shading
+  by how far they've left the surface, so morphs and debris never pop.
 * **Animation.** Skinned meshes keep their bone indices and weights per point,
   and the bone matrices are uploaded each frame from the `Skeleton3D`. So an
   imported character with an `AnimationPlayer` animates as points without any
@@ -142,7 +148,7 @@ cube.carve(hit_position, 0.4)          # chip a hole; points fly off
 cube.impact(hit_position)              # ripple through the surface
 cube.paint(hit_position, 0.5, Color.RED)
 cube.heal(1.5)
-cube.density = 8                       # 8 dots per stored point: finer, more seamless
+cube.max_amplification = 16            # cap on beads per point up close (cost vs. close-up quality)
 cube.surface_texture = load("res://wood.png")   # per-pixel detail on top of dot colours
 cube.texture_tile = Vector3(2, 2, 2)
 
@@ -178,7 +184,7 @@ you can write in GLSL runs on every point every frame.
 | `pointcloud/point_cloud_data.gd` | `PointCloudData` resource |
 | `pointcloud/point_grid.gd` | spatial grid for carve/paint queries |
 | `demo/` | the playable sandbox (player, worm enemy, props) |
-| `tests/` | `smoke_test.tscn` / `demo_capture.tscn` render screenshots headlessly; `demo_video.tscn` is a scripted showcase for Movie Maker |
+| `tests/` | `smoke_test.tscn` / `demo_capture.tscn` / `closeup_test.tscn` render screenshots headlessly; `demo_video.tscn` is a scripted showcase for Movie Maker |
 
 ## Recording a video
 
@@ -216,13 +222,12 @@ trades detail to hold the target. The main techniques:
   per-pixel depth.
 * **Smaller data.** 8-bit colours and half-float normals and curvature; the
   debris and ripple lookups are skipped while nothing is carved or hit.
-* **Tiled terrain with a flat proxy.** The demo ground is split into tiles,
-  and each tile has `flat_proxy` on: while intact it's drawn as one plane
-  with exactly the dots' colour, texture and material. Shots cut holes into
-  the plane (pending carves analytically, baked ones through a small mask)
-  and only the hole walls and debris are drawn as dots. Effects such as
-  morph or dissolve switch the tile back to full dots. Uncarved floor costs
-  almost nothing.
+* **Tiled terrain.** The demo ground is split into tiles, so level of detail
+  and culling work per tile. The floor is beads too, but with sparser points
+  (`lod_spacing_scale`), less overlap (`bead_overlap`) and no extra beads up
+  close (`max_amplification = 1`): you rarely look at it from a few
+  centimetres. (`PointCloud.flat_proxy` still exists for scenes that want to
+  draw an intact flat cloud as a single plane, but the demo doesn't use it.)
 * **Shadow maps.** Shadow-pass dots are plain squares sized to close gaps
   and pushed away from the light by about their radius, so shadows are solid
   and surfaces don't shadow themselves.
@@ -240,7 +245,9 @@ trades detail to hold the target. The main techniques:
 
 Measured with CPU-only software rendering (so only the ratio means
 anything), a demo frame went from 9.6 s to about 0.45 s at the same detail,
-roughly 20× less work per frame, before auto quality does anything.
+roughly 20× less work per frame, before auto quality does anything. Drawing
+the floor as beads instead of a flat plane made that frame about 1.5× slower
+than with the proxy (0.30 s); auto quality absorbs it on a real GPU.
 
 `tests/hitch_test.tscn` measures how long gameplay actions block the main
 thread (morphing, shooting); they are all well under a millisecond.

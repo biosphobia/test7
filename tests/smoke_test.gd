@@ -68,7 +68,6 @@ func _ready() -> void:
 	print("match_order 300k: ", Time.get_ticks_msec() - t0, " ms")
 
 	for c in [cube, sph, tor]:
-		c.density = density
 		c.splats = splat
 		c.exact_depth = exact
 		if nocull:

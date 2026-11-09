@@ -8,7 +8,13 @@ uniform sampler2D nrm_tex : filter_nearest, repeat_disable;   // xyz = normal (R
 uniform sampler2D curv_tex : filter_nearest, repeat_disable;  // curvature tensor, 2 texels per point
 uniform sampler2D state_tex : filter_nearest, repeat_disable; // x = detach time (<0 attached), yzw = velocity
 uniform int tex_width = 2048;
-uniform int density = 1;            // dots drawn per stored point
+uniform int density = 1;            // dot slots per stored point this frame (amplification cap)
+// Adaptive bead count: up close each stored point spawns extra beads around
+// itself so beads stay about target_px apart on screen, wherever the camera
+// is. Every bead decides for itself from its own distance; beads that aren't
+// needed (or are off-screen / facing away) are skipped before any real work.
+uniform bool amplify = true;
+uniform float target_px = 2.0;
 uniform int dot_count = 0;          // dots drawn this frame
 // Points are stored [surface | interior]. Level of detail draws the first
 // surface_drawn surface points, then (after them) a prefix of the interior.
@@ -33,7 +39,7 @@ uniform float target_interior_scale = 1.0;
 uniform float lod_scale = 1.0;            // > 1 when level of detail draws fewer points
 uniform float interior_scale = 1.0;       // interior dot size relative to surface dots
 uniform float min_pixel_size = 1.0;
-uniform float max_pixel_size = 48.0;
+uniform float max_pixel_size = 256.0;
 uniform bool round_points = true;
 // Surface splats: each dot is drawn as a small disc lying in the surface's
 // tangent plane with exact per-pixel depth, so overlapping dots fuse into a
@@ -125,11 +131,16 @@ uniform float bead_size = 0.55;
 // Off = flat surface discs (splats) while resting.
 uniform bool beads = true;
 // Resting bead diameter relative to point_size (must close the surface).
-uniform float bead_cover = 1.55;
-// How much each resting bead's own roundness shows in its shading (0 = flat
-// like the surface, 1 = full sphere). Beads in flight are always full spheres.
-uniform float bead_bulge : hint_range(0.0, 1.0) = 0.55;
-// Darkening towards each bead's rim; defines the individual beads.
+// Extra beads up close sit in overlapping random-ish clusters and need more
+// overlap than the evenly spread stored points, hence two values.
+uniform float bead_cover = 2.1;
+uniform float bead_cover_single = 1.6;
+uniform float bead_overlap = 1.0; // per-cloud multiplier on both
+// How much each resting bead's own roundness shows in its shading (0 = flat:
+// a resting surface looks like one smooth surface). Beads in flight are
+// always full spheres; the look blends with how far a bead is in flight.
+uniform float bead_bulge : hint_range(0.0, 1.0) = 0.0;
+// Darkening towards the rim of beads in flight; defines individual beads.
 uniform float bead_edge_shade : hint_range(0.0, 1.0) = 0.3;
 
 // Ripple impacts: xyz = local position, w = start time (< 0 inactive).
@@ -139,22 +150,29 @@ uniform vec4 impact_params[8];
 uniform float impacts_until = -1.0;  // skip the ripple loop after this time
 
 varying vec4 v_color;
-varying float v_glow;
-varying float v_alive;
-varying float v_px;
-varying vec3 v_center;   // dot centre, view space
-varying vec3 v_vnormal;  // dot normal, view space
-varying vec3 v_local;    // dot centre, local space (for bounds clipping)
-varying float v_radius;  // disc radius, view space
-varying float v_sprite;  // half-size of the screen sprite, view space
-varying float v_flags;   // 1 = orthographic, 2 = clip to bounds
-varying float v_ysign;
+// Single-number varyings packed into vec4s: Forward+ allows only 32 varying
+// slots and each float would take a whole one. Positions are passed in high
+// precision: the Compatibility renderer otherwise uses half floats, and at
+// grazing angles their error turns into visible texture smudges.
+varying highp vec4 v_misc_a;
+varying highp vec4 v_misc_b;
+varying highp vec4 v_misc_c;
+#define v_glow v_misc_a.x
+#define v_alive v_misc_a.y
+#define v_px v_misc_a.z
+#define v_radius v_misc_a.w   // disc / bead radius, view space
+#define v_sprite v_misc_b.x   // half-size of the screen sprite, view space
+#define v_flags v_misc_b.y    // 1 = orthographic, 2 = clip to bounds
+#define v_ysign v_misc_b.z
+#define v_bead v_misc_b.w     // 1 = draw as a round bead
+#define v_fly v_misc_c.x      // 0 = resting on the surface .. 1 = in flight
+#define v_shadow v_misc_c.y   // 1 = drawing into a directional shadow map
+varying highp vec3 v_center;   // dot centre, view space
+varying highp vec3 v_vnormal;  // dot normal, view space
+varying highp vec3 v_local;    // dot centre, local space (for bounds clipping)
 varying mat3 v_shape;    // curvature tensor S (local): dNormal = S * dPosition
-varying vec3 v_texpos;   // rest position, for the surface texture
-varying vec3 v_lnormal;  // rest normal, for triplanar blending
-varying float v_bead;    // 1 = draw as a round bead
-varying float v_fly;     // 0 = resting on the surface .. 1 = in flight
-varying float v_shadow;  // 1 = drawing into a directional shadow map
+varying highp vec3 v_texpos;   // rest position, for the surface texture
+varying highp vec3 v_lnormal;  // rest normal, for triplanar blending
 
 // ---------------------------------------------------------------- helpers
 uint pcg_hash(uint v) {
@@ -201,14 +219,33 @@ mat3 load_shape(sampler2D tex, ivec2 tc) {
 
 // Spreads the dots of one stored point evenly (golden-angle spiral) over a
 // disk of the point's surface area, lying in the tangent plane.
-vec3 sub_offset(vec3 n, int sub, float spin) {
-	if (density <= 1) {
+float radical_inverse(int i, int base) {
+	float inv = 1.0 / float(base);
+	float f = inv;
+	float r = 0.0;
+	for (int k = 0; k < 8 && i > 0; k++) {
+		r += f * float(i % base);
+		i /= base;
+		f *= inv;
+	}
+	return r;
+}
+
+// Where the extra beads of one stored point sit, over the point's patch of
+// surface (a disk in its tangent plane): a Halton(2,3) sequence, randomly
+// shifted per point so neighbouring clusters don't share a pattern. Bead
+// `sub` always sits at the same spot and the first k beads are evenly spread
+// for any k, so moving closer only adds beads, never moves them.
+vec3 sub_offset(vec3 n, int sub, float spin, uint pid) {
+	if (sub == 0) {
 		return vec3(0.0);
 	}
 	vec3 t = normalize(abs(n.y) < 0.99 ? cross(n, vec3(0.0, 1.0, 0.0)) : cross(n, vec3(1.0, 0.0, 0.0)));
 	vec3 b = cross(n, t);
-	float r = sqrt((float(sub) + 0.5) / float(density)) * point_spacing * lod_scale * 0.6;
-	float a = float(sub) * 2.39996323 + spin * TAU;
+	float u = fract(radical_inverse(sub, 2) + hash01(pid * 92821u + 7u));
+	float v = fract(radical_inverse(sub, 3) + spin);
+	float r = sqrt(u) * point_spacing * lod_scale * 1.25;
+	float a = v * TAU;
 	return (t * cos(a) + b * sin(a)) * r;
 }
 
@@ -250,19 +287,48 @@ void vertex() {
 		n = vec3(0.0, 1.0, 0.0);
 	}
 	vec3 base = texelFetch(pos_tex, tc, 0).xyz;
-	vec3 rest = base + sub_offset(n, sub, spin);
+	bool still = morph == 0.0 && vibrate_amplitude == 0.0 && wobble_amplitude == 0.0
+			&& explode == 0.0 && dissolve == 0.0;
+
+	// --- early out: how many beads does this point need here?
+	vec4 vp0 = MODELVIEW_MATRIX * vec4(base, 1.0);
+	float proj_px = abs(PROJECTION_MATRIX[1][1]) * 0.5 * VIEWPORT_SIZE.y;
+	bool persp = PROJECTION_MATRIX[3][3] < 0.5;
+	float spacing_px = point_spacing * lod_scale * length(MODELVIEW_MATRIX[0].xyz) * proj_px
+			/ (persp ? max(-vp0.z, 1e-3) : 1.0);
+	float d_need = amplify ? clamp(spacing_px * spacing_px / (target_px * target_px), 1.0, float(density)) : 1.0;
+	bool cull = padding || float(sub) >= ceil(d_need);
+	// Debris moves away from its rest position, so never pre-cull it.
+	bool may_move = has_debris && texelFetch(state_tex, tc, 0).x >= 0.0;
+	if (!cull && still && !use_skin && !may_move && carve_count == 0) {
+		// Off-screen (with a margin for the bead's size)?
+		vec4 cp = PROJECTION_MATRIX * vp0;
+		float m = cp.w * 1.35 + 0.5;
+		cull = persp && (abs(cp.x) > m || abs(cp.y) > m || cp.w < 0.0);
+		// Facing away from the view?
+		if (!cull && backface_cull && on_surface) {
+			vec3 vd = persp ? normalize(vp0.xyz) : vec3(0.0, 0.0, -1.0);
+			cull = dot(normalize(mat3(MODELVIEW_MATRIX) * n), vd) > 0.25;
+		}
+	}
+	// A bead that has just become needed grows in instead of popping.
+	float sub_fade = clamp(d_need - float(sub), 0.0, 1.0);
+
+	vec3 rest = base + sub_offset(n, sub, spin, uint(id));
 	vec4 c = texelFetch(col_tex, tc, 0);
 	mat3 shape = beads ? mat3(0.0) : load_shape(curv_tex, tc); // beads don't need curvature
 	vec3 p = rest;
 	float size_scale = 1.0;
 	float glow = 0.0;
 	float fly = 0.0; // how much this dot is "in flight" (0 = on the surface)
-	bool still = morph == 0.0 && vibrate_amplitude == 0.0 && wobble_amplitude == 0.0
-			&& explode == 0.0 && dissolve == 0.0;
 	bool at_rest = still && !use_skin;
+	vec4 st = vec4(-1.0);
+	float morph_t = 0.0; // this dot's progress towards the morph target
+
+	if (!cull) { // ======== everything below only for beads that are drawn
 
 	// --- carve state: baked (state_tex) plus carves still pending on the GPU
-	vec4 st = has_debris ? texelFetch(state_tex, tc, 0) : vec4(-1.0);
+	st = has_debris ? texelFetch(state_tex, tc, 0) : vec4(-1.0);
 	if (st.x < 0.0) {
 		for (int i = 0; i < carve_count; i++) {
 			vec4 ca = carve_a[i];
@@ -313,7 +379,6 @@ void vertex() {
 	}
 
 	// --- morph into the target cloud, each point on its own schedule and arc
-	float morph_t = 0.0; // this dot's progress towards the morph target
 	if (morph > 0.0) {
 		float t = clamp((morph - seed * morph_stagger) / (1.0 - morph_stagger), 0.0, 1.0);
 		t = t * t * (3.0 - 2.0 * t);
@@ -322,7 +387,7 @@ void vertex() {
 		if (dot(tn, tn) < 0.01) {
 			tn = vec3(0.0, 1.0, 0.0);
 		}
-		vec3 tp = texelFetch(target_pos_tex, tc, 0).xyz + sub_offset(tn, sub, spin);
+		vec3 tp = texelFetch(target_pos_tex, tc, 0).xyz + sub_offset(tn, sub, spin, uint(id));
 		vec4 tcol = texelFetch(target_col_tex, tc, 0);
 		p = mix(p, tp, t) + rand_dir(uid * 3u + 17u) * sin(t * PI) * morph_arc;
 		fly = max(fly, sin(t * PI));
@@ -379,7 +444,7 @@ void vertex() {
 		if (cloud_time >= st.x) {
 			float life = clamp(dt / debris_lifetime, 0.0, 1.0);
 			// Dots of one point share its velocity but scatter a little.
-			vec3 vel = st.yzw + rand_dir(uid * 13u + 9u) * length(st.yzw) * 0.35 * float(min(density - 1, 1));
+			vec3 vel = st.yzw + rand_dir(uid * 13u + 9u) * length(st.yzw) * 0.35 * (sub > 0 ? 1.0 : 0.0);
 			vec3 off = vel * dt + 0.5 * debris_gravity * dt * dt;
 			p += off * (1.0 - heal);
 			size_scale *= mix(1.0 - life * life, 1.0, heal);
@@ -412,8 +477,9 @@ void vertex() {
 	c.rgb = mix(c.rgb, tint.rgb, tint_amount);
 
 	custom_effect(p, n, c, size_scale, rest, seed, id, sub, cloud_time);
-	if (padding) {
-		p = vec3(1e9); // far outside every frustum
+	} // ======== end of drawn-bead work
+	if (cull) {
+		p = vec3(1e9); // far outside every frustum: nothing is rasterised
 		size_scale = 0.0;
 	}
 
@@ -427,7 +493,7 @@ void vertex() {
 
 	// --- point size: constant world-space size, converted to pixels
 	vec4 vp = MODELVIEW_MATRIX * vec4(p, 1.0);
-	if (backface_cull && still && on_surface) {
+	if (backface_cull && still && on_surface && use_skin) { // skinned: normal known only now
 		vec3 view_dir = PROJECTION_MATRIX[3][3] > 0.5 ? vec3(0.0, 0.0, -1.0) : normalize(vp.xyz);
 		if (dot(normalize(mat3(MODELVIEW_MATRIX) * n), view_dir) > 0.25) {
 			size_scale = 0.0;
@@ -437,10 +503,13 @@ void vertex() {
 	}
 	float obj_scale = length(MODELVIEW_MATRIX[0].xyz);
 	float ps = mix(point_size, target_point_size, morph_t);
-	float disc_size = ps * lod_scale * (beads ? bead_cover : (splats ? splat_scale : 1.0))
+	// More beads per point = smaller beads (same coverage).
+	float amp_scale = sub_fade / sqrt(d_need);
+	float cover = mix(bead_cover_single, bead_cover, clamp(d_need - 1.0, 0.0, 1.0)) * bead_overlap;
+	float disc_size = ps * lod_scale * amp_scale * (beads ? cover : (splats ? splat_scale : 1.0))
 			* (on_surface ? 1.0 : mix(interior_scale, target_interior_scale, morph_t));
 	// Beads in flight are smaller and don't grow much with level of detail.
-	float bead_world = ps * min(lod_scale, 1.6) * bead_size;
+	float bead_world = ps * min(lod_scale, 1.6) * bead_size * amp_scale;
 	float world_size = mix(disc_size, bead_world, fly) * obj_scale * size_scale;
 	bool shadow_pass = PROJECTION_MATRIX[3][3] > 0.5; // orthographic = directional shadow map
 	if (shadow_pass) {
@@ -492,7 +561,10 @@ void fragment() {
 	vec3 q = v_center + vec3(pc.x * v_sprite, -pc.y * v_sprite * v_ysign, 0.0);
 	vec3 hit = q;
 	vec3 texpos = v_texpos;
-	bool ortho = mod(v_flags, 2.0) > 0.5;
+	// Round first: an interpolated 2.0 can arrive as 1.99999.
+	int flags = int(v_flags + 0.5);
+	bool ortho = (flags & 1) != 0;
+	bool clip_bounds = (flags & 2) != 0;
 	mat3 mv = mat3(VIEW_MATRIX) * mat3(MODEL_MATRIX); // rotation * uniform scale
 	float mv_scale = length(mv[0]);
 	float grazing = 1.0;
@@ -514,13 +586,33 @@ void fragment() {
 		// shading in with on-screen size.
 		float detail = smoothstep(4.0, 11.0, v_px);
 		NORMAL = normalize(mix(v_vnormal, bn, mix(bead_bulge, 1.0, v_fly) * detail));
-		hit = v_center + bn * v_radius;
-		bead_shade = mix(1.0, mix(1.0 - bead_edge_shade, 1.0, bn.z), detail);
-		// Offset across the bead (in its screen-facing plane), in local space,
-		// for surface textures and box-edge trimming.
-		vec3 local_off = (transpose(mv) * (vec3(pc.x, -pc.y * v_ysign, 0.0) * v_radius)) / (mv_scale * mv_scale);
+		bead_shade = mix(1.0, mix(1.0 - bead_edge_shade, 1.0, bn.z), detail * max(v_fly, bead_bulge));
+		// The surface point under this pixel: intersect the pixel's view ray
+		// with the bead's surface plane. Texture, box trimming, lighting and
+		// shadows use it, so they're exact per pixel (crisp lines and shadow
+		// edges even on a floor seen at a grazing angle).
+		vec3 ro = ortho ? vec3(q.xy, 0.0) : vec3(0.0);
+		vec3 rd = ortho ? vec3(0.0, 0.0, -1.0) : normalize(q);
+		if (!ortho) {
+			// The exact ray through this pixel, from its screen position. (The
+			// sprite's own coordinate is rounded by some drivers, and at
+			// grazing angles a fraction of a pixel is a long way across the
+			// surface.)
+			vec4 hv = INV_PROJECTION_MATRIX * vec4(SCREEN_UV * 2.0 - 1.0, 0.5, 1.0);
+			rd = normalize(hv.xyz / hv.w);
+		}
+		float denom = dot(rd, v_vnormal);
+		grazing = max(abs(denom), 0.05); // for the texture's mip level
+		vec3 plane_off = q - v_center;
+		if (abs(denom) > 0.05) {
+			plane_off = ro + rd * (dot(v_center - ro, v_vnormal) / denom) - v_center;
+		}
+		plane_off -= v_vnormal * dot(plane_off, v_vnormal);
+		// Resting beads light like the surface; beads in flight like spheres.
+		hit = mix(v_center + plane_off, v_center + bn * v_radius, v_fly);
+		vec3 local_off = (transpose(mv) * plane_off) / (mv_scale * mv_scale);
 		texpos += local_off;
-		if (v_flags > 1.5) {
+		if (clip_bounds) {
 			vec3 lo = v_local + local_off;
 			vec3 eps = bounds_size * 0.0005 + vec3(1e-5);
 			if (any(lessThan(lo, bounds_min - eps)) || any(greaterThan(lo, bounds_min + bounds_size + eps))) {
@@ -548,7 +640,7 @@ void fragment() {
 		// reproducing the source mesh's smoothly interpolated normals, so the
 		// shading of neighbouring discs meets seamlessly.
 		NORMAL = normalize(v_vnormal + mv * (v_shape * local_off) / mv_scale);
-		if (v_flags > 1.5) {
+		if (clip_bounds) {
 			vec3 lo = v_local + local_off;
 			vec3 eps = bounds_size * 0.0005 + vec3(1e-5);
 			if (any(lessThan(lo, bounds_min - eps)) || any(greaterThan(lo, bounds_min + bounds_size + eps))) {

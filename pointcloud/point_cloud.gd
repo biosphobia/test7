@@ -43,10 +43,13 @@ const PROXY_SHADER := preload("res://pointcloud/flat_proxy.gdshader")
 const PROXY_RES := 128
 
 ## Level of detail, shared by all clouds: the on-screen spacing (pixels) to aim
-## for between drawn points. Clouds draw only as many points as they need for
-## that and enlarge them to match. Raise it for speed (PointCloudQuality does
-## this automatically), lower it for detail.
+## for between beads. Far away a cloud draws fewer points; up close every
+## point spawns extra beads (see max_amplification), so beads stay this far
+## apart at any distance. Raise it for speed (PointCloudQuality does this
+## automatically), lower it for finer beads.
 static var lod_spacing_px := 2.0
+## Most beads one cloud may process per frame (caps amplification up close).
+const MAX_DOTS_PER_CLOUD := 2000000
 ## Turns level of detail off everywhere (always draw every point).
 static var lod_enabled := true
 
@@ -77,19 +80,15 @@ static var _clock_frame := -1
 @export_tool_button("Sample source mesh", "PointMesh") var _sample_button := sample_source_mesh
 
 @export_group("Appearance")
-## Dots drawn per stored point. Each stored point becomes a small cluster of
-## dots spread evenly over its patch of surface; every dot has its own random
-## seed, so it shivers, dissolves and flies off as debris on its own. Raising
-## this makes surfaces finer and more seamless without making sampling, memory
-## or carving any slower; the GPU cost grows with stored points × density.
-@export_range(1, 16) var density := 1:
+## Most beads one stored point may spawn when seen up close. Up close each
+## point fills its patch of surface with extra beads so beads stay about
+## `lod_spacing_px` apart on screen; this caps how many.
+@export_range(1, 64) var max_amplification := 32:
 	set(v):
-		density = clampi(v, 1, 64)
-		_sp(&"density", density)
-		_update_point_size()
+		max_amplification = clampi(v, 1, 64)
 		if data and data.size() > 0:
 			_build_mesh(data.size())
-## World-space diameter of each point. 0 = use the data's suggested size.
+
 @export var point_size := 0.0:
 	set(v):
 		point_size = v
@@ -98,7 +97,7 @@ static var _clock_frame := -1
 	set(v):
 		point_size_multiplier = v
 		_update_point_size()
-@export var max_pixel_size := 48.0:
+@export var max_pixel_size := 256.0:
 	set(v):
 		max_pixel_size = v
 		_sp(&"max_pixel_size", v)
@@ -110,6 +109,12 @@ static var _clock_frame := -1
 	set(v):
 		beads = v
 		_sp(&"beads", v)
+## Scales how much resting beads overlap. Lower = less overdraw (faster), but
+## gaps can appear; evenly sampled flat surfaces can go a bit below 1.
+@export_range(0.5, 2.0) var bead_overlap := 1.0:
+	set(v):
+		bead_overlap = v
+		_sp(&"bead_overlap", v)
 ## Draw each dot as a disc lying on the surface with exact per-pixel depth,
 ## so dots fuse into a continuous, solid-looking surface.
 @export var splats := true:
@@ -317,7 +322,10 @@ var _bone_mats: Array[Transform3D] = []
 var _shadow_mat: ShaderMaterial
 var _shadow_mm: MultiMesh
 var _shadow_inst := RID()
-var _drawn := Vector3i(-1, -1, -1)         # surface points, interior points, density
+## Beads per stored point this frame (set by level of detail).
+var density := 1
+var _target_px := -1.0
+var _drawn := Vector3i(-1, -1, -1)         # surface points, interior points, beads per point
 var _shadow_drawn := Vector3i(-1, -1, -1)
 var _has_debris := false
 var _state := PackedFloat32Array()
@@ -363,6 +371,7 @@ func _init() -> void:
 	_mat = ShaderMaterial.new()
 	_shadow_mat = ShaderMaterial.new()
 	_apply_shader()
+	_shadow_mat.set_shader_parameter(&"amplify", false)
 	RenderingServer.instance_geometry_set_material_override(get_instance(), _mat.get_rid())
 	_impact_pos.resize(MAX_IMPACTS)
 	_impact_params.resize(MAX_IMPACTS)
@@ -380,7 +389,7 @@ func _init() -> void:
 			&"wobble_amplitude", &"wobble_frequency", &"wobble_speed", &"explode", &"explode_center",
 			&"dissolve", &"dissolve_direction", &"dissolve_directional", &"dissolve_spread",
 			&"dissolve_drift", &"dissolve_edge_color", &"glow_strength", &"morph", &"morph_stagger",
-			&"morph_arc", &"debris_lifetime", &"debris_gravity", &"density", &"beads", &"splats", &"clip_to_bounds", &"texture_tile", &"texture_offset"]:
+			&"morph_arc", &"debris_lifetime", &"debris_gravity", &"beads", &"bead_overlap", &"splats", &"clip_to_bounds", &"texture_tile", &"texture_offset"]:
 		_sp(p, get(p))
 
 
@@ -502,17 +511,17 @@ func get_point_count() -> int:
 	return data.size() if data else 0
 
 
-## Number of dots at full detail (stored points × density).
+## Number of stored points (each drawn as one or more beads).
 func get_dot_count() -> int:
-	return get_point_count() * density
+	return get_point_count()
 
 
-## Number of dots actually drawn this frame after level of detail (main view,
-## not counting the shadow copy).
+## Upper bound of beads processed this frame (points drawn × beads per
+## point; unneeded, off-screen and back-facing ones are skipped early).
 func get_drawn_dot_count() -> int:
 	if not is_visible_in_tree() or _drawn.x < 0:
 		return 0
-	return (_drawn.x + _drawn.y) * density
+	return (_drawn.x + _drawn.y) * _drawn.z
 
 
 ## Re-uploads all point data after you changed `data` arrays from code.
@@ -1009,7 +1018,7 @@ func _build_mesh(n: int) -> void:
 				_shadow_mm = mm
 				if _shadow_inst.is_valid():
 					RenderingServer.instance_set_base(_shadow_inst, mm.get_rid())
-		var instances := ceili(float(n * density) / CHUNK)
+		var instances := ceili(float(n * (max_amplification if i == 0 else 1)) / CHUNK)
 		if mm.instance_count != instances:
 			mm.instance_count = instances
 			for k in instances:
@@ -1037,7 +1046,11 @@ func _update_lod() -> void:
 	var f := 1.0
 	if lod and lod_enabled and not Engine.is_editor_hint():
 		var cam := get_viewport().get_camera_3d() if is_inside_tree() else null
-		if cam:
+		if cam and (cam.cull_mask & layers) == 0:
+			# The camera can't see this cloud (e.g. the first-person body):
+			# its own draw costs nothing, so don't amplify it.
+			f = 0.0
+		elif cam:
 			var box := global_transform * data.aabb
 			var cp := cam.global_position
 			var d := maxf(cp.distance_to(cp.clamp(box.position, box.end)), cam.near)
@@ -1050,6 +1063,12 @@ func _update_lod() -> void:
 			if f < 1.0:
 				# Quantise to steps of 1/sqrt(2) so counts don't change every frame.
 				f = pow(2.0, floorf(log(maxf(f, 1e-9)) / log(2.0) * 2.0) / 2.0)
+	var target := lod_spacing_px * lod_spacing_scale
+	if target != _target_px:
+		_target_px = target
+		_sp(&"target_px", target)
+	# Closer than full detail: amplify (more, smaller beads per point).
+	var amp := clampi(ceili(f), 1, max_amplification) if f > 1.0 else 1
 	f = minf(f, 1.0)
 	var interior := _has_debris or dissolve > 0.0 or explode != 0.0 or morph > 0.0
 	var a := clampi(ceili(ns * f), mini(ns, LOD_MIN_POINTS), ns)
@@ -1057,9 +1076,11 @@ func _update_lod() -> void:
 	if _proxy_on and not _has_debris:
 		a = 0  # the proxy plane shows the intact surface
 		b = 0
-	_set_drawn(_multimesh, _mat, Vector3i(a, b, density), ns, false)
+	amp = mini(amp, maxi(1, MAX_DOTS_PER_CLOUD / maxi(a + b, 1)))
+	density = amp
+	_set_drawn(_multimesh, _mat, Vector3i(a, b, amp), ns, false)
 	var sa := clampi(ceili(a * SHADOW_DETAIL), mini(ns, LOD_MIN_POINTS / 2), ns)
-	_set_drawn(_shadow_mm, _shadow_mat, Vector3i(sa, ceili(b * SHADOW_DETAIL), density), ns, true)
+	_set_drawn(_shadow_mm, _shadow_mat, Vector3i(sa, ceili(b * SHADOW_DETAIL), 1), ns, true)
 
 
 func _set_drawn(mm: MultiMesh, mat: ShaderMaterial, drawn: Vector3i, ns: int, shadow: bool) -> void:
@@ -1069,9 +1090,10 @@ func _set_drawn(mm: MultiMesh, mat: ShaderMaterial, drawn: Vector3i, ns: int, sh
 		_shadow_drawn = drawn
 	else:
 		_drawn = drawn
-	var dots := (drawn.x + drawn.y) * density
-	mm.visible_instance_count = ceili(float(dots) / CHUNK)
+	var dots := (drawn.x + drawn.y) * drawn.z
+	mm.visible_instance_count = mini(ceili(float(dots) / CHUNK), mm.instance_count)
 	mat.set_shader_parameter(&"dot_count", dots)
+	mat.set_shader_parameter(&"density", drawn.z)
 	mat.set_shader_parameter(&"surface_count", ns)
 	mat.set_shader_parameter(&"surface_drawn", drawn.x)
 	mat.set_shader_parameter(&"lod_scale", sqrt(float(maxi(ns, 1)) / float(maxi(drawn.x, 1))))
@@ -1217,9 +1239,8 @@ func _point_size_for(d: PointCloudData) -> float:
 	var s := point_size
 	if s <= 0.0:
 		s = d.suggested_point_size if d else 0.02
-	# Sub-dots share the stored point's area, so each one is smaller.
-	var dot := s / sqrt(float(density)) * (1.0 if density == 1 else 1.3)
-	return dot * point_size_multiplier
+	# (Extra beads up close are shrunk in the shader.)
+	return s * point_size_multiplier
 
 
 func _reset_state() -> void:

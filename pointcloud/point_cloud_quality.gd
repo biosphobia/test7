@@ -13,7 +13,7 @@ extends Node
 @export_range(0.5, 1.0) var budget_fraction := 0.85
 @export var min_spacing_px := 1.6
 ## Point spacing reached before resolution is lowered.
-@export var soft_spacing_px := 3.5
+@export var soft_spacing_px := 3.0
 @export var max_spacing_px := 6.0
 @export var min_render_scale := 0.6
 @export var enabled := true

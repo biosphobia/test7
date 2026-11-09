@@ -3,9 +3,6 @@ extends Node3D
 ## player and the enemy. Aim at something and play with it.
 
 const MORPH_POINTS := 400000
-## Dots drawn per stored point (see PointCloud.density). 1 is fastest; the
-## surface discs already close up without extra dots.
-const DETAIL := 1
 const GROUND_SIZE := 50.0
 const GROUND_TILE := 5.0
 
@@ -42,9 +39,6 @@ func _ready() -> void:
 
 	for c in get_tree().get_nodes_in_group(&"point_clouds"):
 		var cloud := c as PointCloud
-		# Floor tiles: finer dots for hole walls and effects. With the flat proxy
-		# they're only drawn around holes, so it costs almost nothing.
-		cloud.density = 4 if cloud.flat_proxy else DETAIL
 		cloud.prepare_interaction()
 	# Warm the morph cache in the background so E reacts instantly.
 	for p in props:
@@ -146,9 +140,11 @@ func _build_ground() -> void:
 			cloud.texture_offset = Vector3(-1, 0, -1) - center
 			cloud.debris_gravity = Vector3(0, -8, 0)
 			cloud.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF  # nothing below it to shade
-			# While intact, draw each tile as one textured plane; dots only for
-			# holes, debris and effects.
-			cloud.flat_proxy = true
+			# Flat and textured: resting floor beads are invisible either way,
+			# so a few extra beads up close are plenty.
+			cloud.max_amplification = 1
+			cloud.lod_spacing_scale = 2.5
+			cloud.bead_overlap = 0.8  # evenly spread flat tiles: less overlap is enough
 			body.add_child(cloud)
 			_ground_tiles.append(cloud)
 	body.set_meta("cloud", _ground_tiles[0])
@@ -311,10 +307,6 @@ func _unhandled_input(event: InputEvent) -> void:
 			target.wobble_amplitude = 0.0 if target.wobble_amplitude > 0.0 else 0.08
 		elif event.is_action_pressed("heal"):
 			target.heal(1.5)
-		elif event.is_action_pressed("density_up"):
-			target.density = mini(target.density * 2, 16)
-		elif event.is_action_pressed("density_down"):
-			target.density = maxi(target.density / 2, 1)
 	if event.is_action_pressed("detail_down") or event.is_action_pressed("detail_up"):
 		quality.enabled = false
 		var f := 1.25 if event.is_action_pressed("detail_down") else 0.8
@@ -408,7 +400,6 @@ func _build_hud() -> void:
 		"Aim at something, then:",
 		"  E morph · Q dissolve / reassemble · F explode",
 		"  V vibrate · G wobble · H heal holes",
-		"  [ / ] fewer / more dots per point",
 		"- / = less / more detail · 0 automatic (holds 60 fps)",
 		"F9 smoothing filter on/off · F10 switch renderer (Compatibility is faster)",
 		"R restore everything · Esc free mouse",
@@ -453,12 +444,12 @@ func _update_hud() -> void:
 		if target == worm.cloud:
 			aimed += " (hp %d)" % worm.hp
 	if target:
-		aimed += "\n%s dots (%d per point)" % [_group_digits(target.get_dot_count()), target.density]
+		aimed += "\n%s points · up to %d beads each" % [_group_digits(target.get_dot_count()), target.density]
 	var renderer := RenderingServer.get_current_rendering_method()
 	var hint := ""
 	if quality.is_maxed_out() and renderer != "gl_compatibility":
 		hint = "\nstill slow: press F10 for the lighter renderer"
-	_status.text = "%d FPS · %s\n%s of %s dots drawn\n%s%s\ntarget: %s" % [Engine.get_frames_per_second(),
+	_status.text = "%d FPS · %s\n%s bead slots for %s points\n%s%s\ntarget: %s" % [Engine.get_frames_per_second(),
 		renderer.replace("gl_", "").replace("_", " "), _group_digits(drawn), _group_digits(total),
 		quality.describe(), hint, aimed]
 
@@ -484,7 +475,6 @@ func _setup_input() -> void:
 		"move_forward": KEY_W, "move_back": KEY_S, "move_left": KEY_A, "move_right": KEY_D,
 		"jump": KEY_SPACE, "sprint": KEY_SHIFT, "morph": KEY_E, "dissolve": KEY_Q,
 		"explode": KEY_F, "vibrate": KEY_V, "wobble": KEY_G, "heal": KEY_H, "restore": KEY_R,
-		"density_down": KEY_BRACKETLEFT, "density_up": KEY_BRACKETRIGHT,
 		"detail_down": KEY_MINUS, "detail_up": KEY_EQUAL, "detail_auto": KEY_0,
 		"switch_renderer": KEY_F10, "toggle_blend": KEY_F9,
 	}
