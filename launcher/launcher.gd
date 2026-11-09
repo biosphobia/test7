@@ -39,6 +39,10 @@ func _ready() -> void:
 	# Started from the editor, or already relaunched on a downloaded pack.
 	if OS.has_feature("editor") or "--updated" in OS.get_cmdline_user_args() \
 			or "--no-update" in OS.get_cmdline_user_args():
+		# Executables built before the renderer setting existed relaunch
+		# without renderer arguments, so apply the preference here too.
+		if not OS.has_feature("editor") and _relaunch_with_renderer():
+			return
 		_start_game.call_deferred()
 		return
 	_build_ui()
@@ -108,6 +112,30 @@ static func renderer_args() -> PackedStringArray:
 	if want == "gl_compatibility":
 		return PackedStringArray(["--rendering-method", "gl_compatibility", "--rendering-driver", "opengl3"])
 	return PackedStringArray(["--rendering-method", want])
+
+
+## Restarts with the same engine arguments plus the preferred renderer, if it
+## isn't the one running. Returns true if a restart was started.
+func _relaunch_with_renderer() -> bool:
+	var extra := renderer_args()
+	if extra.is_empty() or "--renderer-applied" in OS.get_cmdline_user_args():
+		return false
+	var args := PackedStringArray()
+	var skip := false
+	for a in OS.get_cmdline_args():
+		if skip:
+			skip = false
+			continue
+		if a in ["--rendering-method", "--rendering-driver"]:
+			skip = true
+			continue
+		args.append(a)
+	args.append_array(extra)
+	args.append_array(["--", "--updated", "--renderer-applied"])
+	if OS.create_process(OS.get_executable_path(), args) > 0:
+		get_tree().quit.call_deferred()
+		return true
+	return false
 
 
 ## Switches between Forward+ and the lighter Compatibility renderer, then
