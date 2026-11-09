@@ -11,8 +11,8 @@ text, changing colour on the way.
 
 | | |
 |---|---|
-| ![A solid cube made of 1.6 million dots](docs/solid_shapes.png) | ![Shooting the cube: dots chip off, glowing core shows](docs/demo.png) |
-| ![Dissolving cube](docs/dissolve.png) | Everything in these shots is dots, 10.8 million in the scene. Top left: an intact 1.6-million-dot cube. Top right: the same cube being shot, with dots flying off and its glowing interior showing. Bottom left: a dissolve. Record your own with `tests/demo_video.tscn` (see below). |
+| ![First-person view: every object is made of dots](docs/solid_shapes.png) | ![Shooting the cube and the floor: holes, hole walls, flying beads](docs/demo.png) |
+| ![Dissolving cube](docs/dissolve.png) | Everything in these shots is dots, drawn as solid surfaces. Top left: the first-person view. Top right: the cube and the floor after a few shots, with dark hole walls and glowing debris beads. Bottom left: a dissolve. Record your own with `tests/demo_video.tscn` (see below). |
 
 ## Download (Windows)
 
