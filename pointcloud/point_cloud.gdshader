@@ -1,0 +1,294 @@
+// Point cloud renderer.
+//
+// Every point lives in a set of data textures (one texel per point) that are
+// written by PointCloud.gd. The mesh that gets drawn is just N dummy vertices
+// rendered as GL points; the vertex shader looks up its own point with
+// VERTEX_ID and computes position / colour / size from the textures plus the
+// effect uniforms below. Because everything happens here, effects cost no CPU
+// time no matter how many points a cloud has.
+//
+// Want your own effect? Edit custom_effect() near the bottom, or copy this
+// shader and assign it with PointCloud.shader_override.
+shader_type spatial;
+render_mode cull_disabled, depth_draw_opaque;
+
+// ---------------------------------------------------------------- point data
+uniform sampler2D pos_tex : filter_nearest, repeat_disable;   // xyz = rest position (RGB32F)
+uniform sampler2D col_tex : filter_nearest, repeat_disable;   // rgba = sRGB colour (RGBA32F)
+uniform sampler2D nrm_tex : filter_nearest, repeat_disable;   // xyz = normal (RGB32F)
+uniform sampler2D state_tex : filter_nearest, repeat_disable; // x = detach time (<0 attached), yzw = velocity
+uniform int tex_width = 2048;
+uniform float cloud_time = 0.0;
+uniform vec3 bounds_min = vec3(-1.0);
+uniform vec3 bounds_size = vec3(2.0);
+
+// ---------------------------------------------------------------- appearance
+uniform float point_size = 0.02;          // world-space diameter of one point
+uniform float min_pixel_size = 1.0;
+uniform float max_pixel_size = 48.0;
+uniform bool round_points = true;
+uniform bool unshaded = false;
+uniform float roughness : hint_range(0.0, 1.0) = 0.75;
+uniform float metallic : hint_range(0.0, 1.0) = 0.0;
+uniform float emission_strength = 0.0;
+uniform vec4 tint = vec4(1.0);
+uniform float tint_amount : hint_range(0.0, 1.0) = 0.0;
+
+// ---------------------------------------------------------------- skinning
+uniform bool use_skin = false;
+uniform sampler2D bone_idx_tex : filter_nearest, repeat_disable;   // 4 bind indices per point
+uniform sampler2D bone_wgt_tex : filter_nearest, repeat_disable;   // 4 weights per point
+uniform sampler2D bone_xform_tex : filter_nearest, repeat_disable; // 3 texels (matrix rows) per bind
+
+// ---------------------------------------------------------------- morph
+uniform sampler2D target_pos_tex : filter_nearest, repeat_disable;
+uniform sampler2D target_col_tex : filter_nearest, repeat_disable;
+uniform sampler2D target_nrm_tex : filter_nearest, repeat_disable;
+uniform float morph : hint_range(0.0, 1.0) = 0.0;
+uniform float morph_stagger : hint_range(0.0, 0.95) = 0.5;
+uniform float morph_arc = 0.3;
+
+// ---------------------------------------------------------------- effects
+uniform float vibrate_amplitude = 0.0;
+uniform float vibrate_frequency = 30.0;
+
+uniform float wobble_amplitude = 0.0;
+uniform float wobble_frequency = 3.0;
+uniform float wobble_speed = 3.0;
+
+uniform float explode = 0.0;
+uniform vec3 explode_center = vec3(0.0);
+
+uniform float dissolve : hint_range(0.0, 1.0) = 0.0;
+uniform vec3 dissolve_direction = vec3(0.0, 1.0, 0.0);
+uniform float dissolve_directional : hint_range(0.0, 1.0) = 0.0;
+uniform float dissolve_span = 0.4;
+uniform float dissolve_spread = 1.5;
+uniform vec3 dissolve_drift = vec3(0.0, 0.6, 0.0);
+uniform vec4 dissolve_edge_color : source_color = vec4(1.0, 0.45, 0.1, 1.0);
+uniform float glow_strength = 4.0;
+
+uniform float debris_lifetime = 2.0;
+uniform vec3 debris_gravity = vec3(0.0, -3.0, 0.0);
+uniform float heal : hint_range(0.0, 1.0) = 0.0;
+
+// Ripple impacts: xyz = local position, w = start time (< 0 inactive).
+uniform vec4 impact_pos[8];
+// x = strength, y = speed, z = ring width, w = decay
+uniform vec4 impact_params[8];
+
+varying vec4 v_color;
+varying float v_glow;
+varying float v_alive;
+varying float v_px;
+
+// ---------------------------------------------------------------- helpers
+uint pcg_hash(uint v) {
+	uint state = v * 747796405u + 2891336453u;
+	uint word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+	return (word >> 22u) ^ word;
+}
+
+float hash01(uint v) {
+	return float(pcg_hash(v)) * (1.0 / 4294967295.0);
+}
+
+vec3 rand_dir(uint v) {
+	float z = hash01(v) * 2.0 - 1.0;
+	float a = hash01(v ^ 0x9E3779B9u) * TAU;
+	float r = sqrt(max(1.0 - z * z, 0.0));
+	return vec3(r * cos(a), z, r * sin(a));
+}
+
+vec3 srgb_to_linear(vec3 c) {
+	vec3 lo = c / 12.92;
+	vec3 hi = pow((max(c, vec3(0.0)) + 0.055) / 1.055, vec3(2.4));
+	return mix(hi, lo, vec3(1.0) - step(vec3(0.04045), c));
+}
+
+void accum_bone(float bone, float w, vec3 p, vec3 n, inout vec3 sp, inout vec3 sn) {
+	if (w <= 0.0) {
+		return;
+	}
+	int b = int(bone + 0.5);
+	vec4 r0 = texelFetch(bone_xform_tex, ivec2(0, b), 0);
+	vec4 r1 = texelFetch(bone_xform_tex, ivec2(1, b), 0);
+	vec4 r2 = texelFetch(bone_xform_tex, ivec2(2, b), 0);
+	vec4 hp = vec4(p, 1.0);
+	sp += vec3(dot(r0, hp), dot(r1, hp), dot(r2, hp)) * w;
+	sn += vec3(dot(r0.xyz, n), dot(r1.xyz, n), dot(r2.xyz, n)) * w;
+}
+
+// ---------------------------------------------------------------- your hook
+// Runs for every point, every frame, after all built-in effects.
+//   p          position in the cloud's local space (writable)
+//   n          normal (writable)
+//   c          sRGB colour, alpha unused (writable)
+//   size_scale multiply to grow/shrink the point, <= 0.02 hides it
+//   rest       the point's undeformed rest position
+//   seed       stable random number in [0, 1] for this point
+//   id         point index
+void custom_effect(inout vec3 p, inout vec3 n, inout vec4 c, inout float size_scale,
+		vec3 rest, float seed, int id, float t) {
+	// Example: uncomment for a twisting effect.
+	// float a = rest.y * 0.8 * sin(t);
+	// p.xz = mat2(vec2(cos(a), sin(a)), vec2(-sin(a), cos(a))) * p.xz;
+}
+
+void vertex() {
+	int id = VERTEX_ID;
+	uint uid = uint(id);
+	ivec2 tc = ivec2(id % tex_width, id / tex_width);
+	float seed = hash01(uid);
+
+	vec3 rest = texelFetch(pos_tex, tc, 0).xyz;
+	vec4 c = texelFetch(col_tex, tc, 0);
+	vec3 n = texelFetch(nrm_tex, tc, 0).xyz;
+	if (dot(n, n) < 0.01) {
+		n = vec3(0.0, 1.0, 0.0);
+	}
+	vec3 p = rest;
+	float size_scale = 1.0;
+	float glow = 0.0;
+
+	// --- skeletal animation (linear blend skinning)
+	if (use_skin) {
+		vec4 bi = texelFetch(bone_idx_tex, tc, 0);
+		vec4 bw = texelFetch(bone_wgt_tex, tc, 0);
+		vec3 sp = vec3(0.0);
+		vec3 sn = vec3(0.0);
+		accum_bone(bi.x, bw.x, rest, n, sp, sn);
+		accum_bone(bi.y, bw.y, rest, n, sp, sn);
+		accum_bone(bi.z, bw.z, rest, n, sp, sn);
+		accum_bone(bi.w, bw.w, rest, n, sp, sn);
+		float wsum = bw.x + bw.y + bw.z + bw.w;
+		if (wsum > 0.0) {
+			p = sp / wsum;
+			n = normalize(sn + vec3(1e-6));
+		}
+	}
+
+	// --- morph into the target cloud, each point on its own schedule and arc
+	if (morph > 0.0) {
+		float t = clamp((morph - seed * morph_stagger) / (1.0 - morph_stagger), 0.0, 1.0);
+		t = t * t * (3.0 - 2.0 * t);
+		vec3 tp = texelFetch(target_pos_tex, tc, 0).xyz;
+		vec4 tcol = texelFetch(target_col_tex, tc, 0);
+		vec3 tn = texelFetch(target_nrm_tex, tc, 0).xyz;
+		p = mix(p, tp, t) + rand_dir(uid * 3u + 17u) * sin(t * PI) * morph_arc;
+		c = mix(c, tcol, t);
+		n = normalize(mix(n, tn, t) + vec3(1e-6));
+	}
+
+	// --- vibrate: every point shivers around its own spot
+	if (vibrate_amplitude != 0.0) {
+		vec3 d = rand_dir(uid * 5u + 1u);
+		p += d * sin(cloud_time * vibrate_frequency * (0.6 + 0.8 * seed) + seed * TAU) * vibrate_amplitude;
+	}
+
+	// --- wobble: smooth jelly waves travelling through the surface
+	if (wobble_amplitude != 0.0) {
+		float w = sin(dot(rest, vec3(1.3, 1.7, 1.1)) * wobble_frequency + cloud_time * wobble_speed)
+				* cos(dot(rest, vec3(-1.1, 0.9, 1.5)) * wobble_frequency * 0.7 - cloud_time * wobble_speed * 0.8);
+		p += n * w * wobble_amplitude;
+	}
+
+	// --- explode outward from a centre
+	if (explode != 0.0) {
+		vec3 d = normalize(p - explode_center + rand_dir(uid * 7u + 3u) * 0.35 + vec3(1e-5));
+		p += d * explode * (0.4 + seed * 1.2);
+	}
+
+	// --- dissolve: points detach (randomly or as a sweeping front) and drift away
+	if (dissolve > 0.0) {
+		vec3 h3 = (rest - bounds_min) / max(bounds_size, vec3(1e-4)) - 0.5;
+		vec3 dir = normalize(dissolve_direction + vec3(1e-6));
+		float h01 = dot(h3, dir) / max(dot(abs(dir), vec3(1.0)), 1e-4) + 0.5;
+		float threshold = mix(seed, h01 * 0.85 + seed * 0.15, dissolve_directional);
+		float a = clamp((dissolve * (1.0 + dissolve_span) - threshold) / dissolve_span, 0.0, 1.0);
+		if (a > 0.0) {
+			p += (rand_dir(uid * 11u + 5u) + dissolve_drift) * dissolve_spread * a * a;
+			size_scale *= 1.0 - smoothstep(0.55, 1.0, a);
+			glow += 1.0 - smoothstep(0.0, 0.35, a);
+		}
+	}
+
+	// --- debris: points knocked off by carve(), flying on their own velocity
+	vec4 st = texelFetch(state_tex, tc, 0);
+	if (st.x >= 0.0) {
+		float dt = max(cloud_time - st.x, 0.0);
+		if (cloud_time >= st.x) {
+			float life = clamp(dt / debris_lifetime, 0.0, 1.0);
+			vec3 off = st.yzw * dt + 0.5 * debris_gravity * dt * dt;
+			p += off * (1.0 - heal);
+			size_scale *= mix(1.0 - life * life, 1.0, heal);
+			glow += (1.0 - smoothstep(0.0, 0.25, life)) * (1.0 - heal);
+		}
+	}
+
+	// --- ripples from impact()
+	for (int i = 0; i < 8; i++) {
+		vec4 ip = impact_pos[i];
+		vec4 pr = impact_params[i];
+		if (ip.w < 0.0 || pr.x == 0.0) {
+			continue;
+		}
+		float dt = cloud_time - ip.w;
+		if (dt < 0.0 || dt > 4.0) {
+			continue;
+		}
+		vec3 dv = p - ip.xyz;
+		float d = length(dv);
+		float x = (d - dt * pr.y) / max(pr.z, 1e-4);
+		float env = exp(-x * x) * exp(-dt * pr.w) * pr.x;
+		p += (dv / max(d, 1e-4)) * env;
+		glow += env * 2.0;
+	}
+
+	c.rgb = mix(c.rgb, tint.rgb, tint_amount);
+
+	custom_effect(p, n, c, size_scale, rest, seed, id, cloud_time);
+
+	VERTEX = p;
+	NORMAL = n;
+
+	// --- point size: constant world-space size, converted to pixels
+	vec4 vp = MODELVIEW_MATRIX * vec4(p, 1.0);
+	float world_size = point_size * length(MODELVIEW_MATRIX[0].xyz) * size_scale;
+	// abs(): the Compatibility renderer flips Y (negative [1][1]) when
+	// rendering to a texture.
+	float px = world_size * abs(PROJECTION_MATRIX[1][1]) * 0.5 * VIEWPORT_SIZE.y;
+	if (PROJECTION_MATRIX[3][3] < 0.5) {
+		px /= max(-vp.z, 1e-3); // perspective
+	}
+	v_alive = size_scale > 0.02 ? 1.0 : 0.0;
+	POINT_SIZE = v_alive > 0.5 ? clamp(px, min_pixel_size, max_pixel_size) : 1.0;
+	v_px = POINT_SIZE;
+	v_color = c;
+	v_glow = glow;
+}
+
+void fragment() {
+	if (v_alive < 0.5) {
+		discard;
+	}
+	// Rounding only helps once a point covers several pixels; below that it
+	// just punches holes in the surface.
+	if (round_points && v_px > 3.5) {
+		vec2 q = POINT_COORD * 2.0 - 1.0;
+		if (dot(q, q) > 1.0) {
+			discard;
+		}
+	}
+	vec3 col = srgb_to_linear(v_color.rgb);
+	if (unshaded) {
+		ALBEDO = vec3(0.0);
+		EMISSION = col;
+	} else {
+		ALBEDO = col;
+		EMISSION = col * emission_strength;
+	}
+	EMISSION += dissolve_edge_color.rgb * v_glow * glow_strength;
+	ROUGHNESS = roughness;
+	METALLIC = metallic;
+}
