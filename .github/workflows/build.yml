@@ -1,0 +1,68 @@
+# Builds the game on every push and publishes it to the "latest" release:
+#   PointCloudWorld.exe  - Windows executable (download once)
+#   game.pck             - all game content; the exe downloads this on start
+#   version.json         - commit + time, used by the exe to detect updates
+name: Build & publish
+
+on:
+  push:
+    branches: [main, ccr-360bf1be-1h7vgq]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: publish-latest
+  cancel-in-progress: true
+
+env:
+  GODOT_VERSION: 4.4.1
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Godot and export templates
+        run: |
+          base=https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-stable
+          curl -sSL -o godot.zip "$base/Godot_v${GODOT_VERSION}-stable_linux.x86_64.zip"
+          unzip -q godot.zip && mv Godot_v${GODOT_VERSION}-stable_linux.x86_64 godot-bin && rm godot.zip
+          curl -sSL -o templates.tpz "$base/Godot_v${GODOT_VERSION}-stable_export_templates.tpz"
+          dest=~/.local/share/godot/export_templates/${GODOT_VERSION}.stable
+          mkdir -p "$dest"
+          unzip -q -j templates.tpz templates/windows_release_x86_64.exe \
+            templates/windows_release_x86_64_console.exe templates/version.txt -d "$dest"
+          rm templates.tpz
+
+      - name: Stamp version
+        run: |
+          echo "{\"commit\": \"${GITHUB_SHA}\", \"time\": $(git log -1 --format=%ct), \"branch\": \"${GITHUB_REF_NAME}\"}" > version.json
+          cat version.json
+
+      - name: Export
+        run: |
+          ./godot-bin --headless --import || true
+          mkdir -p build
+          ./godot-bin --headless --export-pack "Windows" build/game.pck
+          ./godot-bin --headless --export-release "Windows" build/PointCloudWorld.exe
+          cp version.json build/version.json
+          ls -la build
+          test -s build/game.pck && test -s build/PointCloudWorld.exe
+
+      - name: Publish to the "latest" release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          notes="Download **PointCloudWorld.exe** once. It updates itself from this release on every start.
+          Built from ${GITHUB_SHA} (${GITHUB_REF_NAME})."
+          if ! gh release view latest >/dev/null 2>&1; then
+            gh release create latest --title "Point Cloud World (latest)" --notes "$notes" --target "$GITHUB_SHA"
+          else
+            gh release edit latest --notes "$notes"
+          fi
+          # Pack first, version last, so the exe never sees a version whose pack isn't uploaded yet.
+          gh release upload latest build/game.pck build/PointCloudWorld.exe --clobber
+          gh release upload latest build/version.json --clobber
