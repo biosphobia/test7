@@ -192,9 +192,26 @@ static func from_mesh(mesh: Mesh, count: int, opts: Dictionary = {}) -> PointClo
 	out.positions.resize(count)
 	out.normals.resize(count)
 	out.colors.resize(count)
+	out.curvatures.resize(count)
 	if any_bones:
 		out.bone_indices.resize(count * 4)
 		out.bone_weights.resize(count * 4)
+
+	# Curvature per triangle from how its vertex normals turn along its edges
+	# (0 for flat faces, 1/r on a sphere of radius r).
+	var tri_k := PackedFloat32Array()
+	tri_k.resize(tri_count)
+	for t in tri_count:
+		var k := 0.0
+		for e in 3:
+			var a := tri[t * 3 + e]
+			var b := tri[t * 3 + (e + 1) % 3]
+			var dp := V[a] - V[b]
+			var l2 := dp.length_squared()
+			if l2 > 1e-12 and N[a].length_squared() > 0.5 and N[b].length_squared() > 0.5:
+				k += (N[a] - N[b]).dot(dp) / l2
+		tri_k[t] = k / 3.0
+
 	var slot := PackedInt32Array()
 	slot.resize(count)
 	for i in count:
@@ -267,6 +284,7 @@ static func from_mesh(mesh: Mesh, count: int, opts: Dictionary = {}) -> PointClo
 		out.positions[o] = p
 		out.normals[o] = n
 		out.colors[o] = col
+		out.curvatures[o] = 0.0 if inside else tri_k[t]
 		if any_bones:
 			var dom := i0
 			if u >= w and u >= v:
@@ -284,6 +302,7 @@ static func from_mesh(mesh: Mesh, count: int, opts: Dictionary = {}) -> PointClo
 		out.positions = xf * out.positions
 		out.normals = Transform3D(xf.basis.orthonormalized(), Vector3.ZERO) * out.normals
 		out.suggested_point_size *= xf.basis.get_scale().x
+		out.curvatures = PointCloudData._scaled(out.curvatures, 1.0 / xf.basis.get_scale().x)
 	out.recompute_aabb()
 	return out
 
@@ -325,13 +344,16 @@ static func sphere(radius: float, count: int, opts: Dictionary = {}) -> PointClo
 	# Snap surface points onto the true sphere so no facets show.
 	var p := data.positions
 	var nrm := data.normals
+	var curv := data.curvatures
 	for i in p.size():
 		var l := p[i].length()
 		if l > radius * 0.97:
 			p[i] = p[i] / l * radius
 			nrm[i] = p[i] / radius
+			curv[i] = 1.0 / radius
 	data.positions = p
 	data.normals = nrm
+	data.curvatures = curv
 	return data
 
 

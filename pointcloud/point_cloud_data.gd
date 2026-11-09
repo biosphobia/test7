@@ -21,6 +21,9 @@ extends Resource
 @export var positions := PackedVector3Array()
 @export var colors := PackedColorArray()
 @export var normals := PackedVector3Array()
+## Surface curvature (1 / radius) at each point, positive where convex. Used to
+## bend normals across each dot so lighting is smooth. Optional.
+@export var curvatures := PackedFloat32Array()
 ## 4 skin bind indices per point (stored as floats). Empty when not skinned.
 @export var bone_indices := PackedFloat32Array()
 ## 4 skin weights per point. Empty when not skinned.
@@ -76,12 +79,15 @@ func picked(indices: PackedInt32Array) -> PointCloudData:
 	var count := indices.size()
 	var has_n := normals.size() == size()
 	var has_c := colors.size() == size()
+	var has_k := curvatures.size() == size()
 	var skinned := is_skinned()
 	out.positions.resize(count)
 	if has_n:
 		out.normals.resize(count)
 	if has_c:
 		out.colors.resize(count)
+	if has_k:
+		out.curvatures.resize(count)
 	if skinned:
 		out.bone_indices.resize(count * 4)
 		out.bone_weights.resize(count * 4)
@@ -92,6 +98,8 @@ func picked(indices: PackedInt32Array) -> PointCloudData:
 			out.normals[i] = normals[j]
 		if has_c:
 			out.colors[i] = colors[j]
+		if has_k:
+			out.curvatures[i] = curvatures[j]
 		if skinned:
 			for k in 4:
 				out.bone_indices[i * 4 + k] = bone_indices[j * 4 + k]
@@ -115,6 +123,7 @@ func merge(other: PointCloudData, xform := Transform3D.IDENTITY) -> void:
 	var rot := Transform3D(xform.basis.orthonormalized(), Vector3.ZERO)
 	normals.append_array(rot * o.normals)
 	colors.append_array(o.colors)
+	curvatures.append_array(o.curvatures if xform.basis.get_scale().x == 1.0 else _scaled(o.curvatures, 1.0 / xform.basis.get_scale().x))
 	if both_skinned:
 		bone_indices.append_array(o.bone_indices)
 		bone_weights.append_array(o.bone_weights)
@@ -134,3 +143,12 @@ func _fill_defaults() -> void:
 	if colors.size() != n:
 		colors.resize(n)
 		colors.fill(Color.WHITE)
+	if curvatures.size() != n:
+		curvatures.resize(n)
+
+
+static func _scaled(a: PackedFloat32Array, f: float) -> PackedFloat32Array:
+	var out := a.duplicate()
+	for i in out.size():
+		out[i] *= f
+	return out

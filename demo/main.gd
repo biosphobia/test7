@@ -96,12 +96,14 @@ func _build_ground() -> void:
 		"color_fn": func(p: Vector3, _n, _c, inside: bool) -> Color:
 			if inside:
 				return Color(0.35, 0.12, 0.05).lerp(Color(1.0, 0.5, 0.1), clampf(-p.y * 2.0, 0.0, 1.0))
+			var checker := (floori(p.x * 0.5) + floori(p.z * 0.5)) & 1
+			var base := Color(0.16, 0.17, 0.2) if checker == 0 else Color(0.12, 0.13, 0.16)
+			# Soft-edged grid lines: a gradient a few dots wide instead of a hard
+			# edge, so the line edges look smooth rather than ragged.
 			var gx := absf(fposmod(p.x + 1.0, 2.0) - 1.0)
 			var gz := absf(fposmod(p.z + 1.0, 2.0) - 1.0)
-			if gx > 0.96 or gz > 0.96:
-				return Color(0.2, 0.75, 0.9)
-			var checker := (floori(p.x * 0.5) + floori(p.z * 0.5)) & 1
-			return Color(0.16, 0.17, 0.2) if checker == 0 else Color(0.12, 0.13, 0.16),
+			var line := smoothstep(0.9, 0.975, maxf(gx, gz))
+			return base.lerp(Color(0.2, 0.75, 0.9), line),
 	})
 	cloud.debris_gravity = Vector3(0, -8, 0)
 	cloud.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF  # nothing below it to shade
@@ -317,6 +319,15 @@ func _build_hud() -> void:
 	_status.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	_status.add_theme_color_override("font_shadow_color", Color.BLACK)
 	layer.add_child(_status)
+	var build := Label.new()
+	var v := _read_version()
+	build.text = "build %s" % str(v.get("commit", "dev")).substr(0, 7)
+	build.anchor_top = 1.0
+	build.anchor_bottom = 1.0
+	build.offset_left = 16
+	build.offset_top = -34
+	build.modulate = Color(1, 1, 1, 0.6)
+	layer.add_child(build)
 	var cross := Label.new()
 	cross.text = "+"
 	cross.add_theme_font_size_override("font_size", 28)
@@ -338,6 +349,13 @@ func _update_hud() -> void:
 	if target:
 		aimed += "\n%s dots (%d per point)" % [_group_digits(target.get_dot_count()), target.density]
 	_status.text = "%d FPS\n%s dots\ntarget: %s" % [Engine.get_frames_per_second(), _group_digits(total), aimed]
+
+
+static func _read_version() -> Dictionary:
+	if not FileAccess.file_exists("res://version.json"):
+		return {}
+	var parsed = JSON.parse_string(FileAccess.get_file_as_string("res://version.json"))
+	return parsed if parsed is Dictionary else {}
 
 
 static func _group_digits(n: int) -> String:

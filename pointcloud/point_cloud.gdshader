@@ -16,6 +16,7 @@ render_mode cull_disabled, depth_draw_opaque;
 uniform sampler2D pos_tex : filter_nearest, repeat_disable;   // xyz = rest position (RGB32F)
 uniform sampler2D col_tex : filter_nearest, repeat_disable;   // rgba = sRGB colour (RGBA32F)
 uniform sampler2D nrm_tex : filter_nearest, repeat_disable;   // xyz = normal (RGB32F)
+uniform sampler2D curv_tex : filter_nearest, repeat_disable;  // r = curvature, 1/radius (R32F)
 uniform sampler2D state_tex : filter_nearest, repeat_disable; // x = detach time (<0 attached), yzw = velocity
 uniform int tex_width = 2048;
 uniform int density = 1;            // dots drawn per stored point
@@ -31,6 +32,13 @@ uniform float point_size = 0.02;          // world-space diameter of one point
 uniform float min_pixel_size = 1.0;
 uniform float max_pixel_size = 48.0;
 uniform bool round_points = true;
+// Surface splats: each dot is drawn as a small disc lying in the surface's
+// tangent plane with exact per-pixel depth, so overlapping dots fuse into a
+// continuous surface (no stipple, no interior dots showing through).
+uniform bool splats = true;
+// While a dot is at rest, cut its disc off at the cloud's bounding box. Makes
+// box edges and flat borders razor sharp instead of fuzzy.
+uniform bool clip_to_bounds = true;
 uniform bool unshaded = false;
 uniform float roughness : hint_range(0.0, 1.0) = 0.75;
 uniform float metallic : hint_range(0.0, 1.0) = 0.0;
@@ -48,6 +56,9 @@ uniform sampler2D bone_xform_tex : filter_nearest, repeat_disable; // 3 texels (
 uniform sampler2D target_pos_tex : filter_nearest, repeat_disable;
 uniform sampler2D target_col_tex : filter_nearest, repeat_disable;
 uniform sampler2D target_nrm_tex : filter_nearest, repeat_disable;
+uniform sampler2D target_curv_tex : filter_nearest, repeat_disable;
+// Splat discs are this much larger than plain dots so they overlap fully.
+uniform float splat_scale = 1.6;
 uniform float morph : hint_range(0.0, 1.0) = 0.0;
 uniform float morph_stagger : hint_range(0.0, 0.95) = 0.5;
 uniform float morph_arc = 0.3;
@@ -85,6 +96,14 @@ varying vec4 v_color;
 varying float v_glow;
 varying float v_alive;
 varying float v_px;
+varying vec3 v_center;   // dot centre, view space
+varying vec3 v_vnormal;  // dot normal, view space
+varying vec3 v_local;    // dot centre, local space (for bounds clipping)
+varying float v_radius;  // disc radius, view space
+varying float v_sprite;  // half-size of the screen sprite, view space
+varying float v_flags;   // 1 = orthographic, 2 = clip to bounds
+varying float v_ysign;
+varying float v_curv;    // curvature in view-space units
 
 // ---------------------------------------------------------------- helpers
 uint pcg_hash(uint v) {
@@ -173,9 +192,12 @@ void vertex() {
 	}
 	vec3 rest = texelFetch(pos_tex, tc, 0).xyz + sub_offset(n, sub, spin);
 	vec4 c = texelFetch(col_tex, tc, 0);
+	float curv = texelFetch(curv_tex, tc, 0).r;
 	vec3 p = rest;
 	float size_scale = 1.0;
 	float glow = 0.0;
+	bool at_rest = !use_skin && morph == 0.0 && vibrate_amplitude == 0.0 && wobble_amplitude == 0.0
+			&& explode == 0.0 && dissolve == 0.0;
 
 	// --- skeletal animation (linear blend skinning)
 	if (use_skin) {
@@ -207,6 +229,7 @@ void vertex() {
 		p = mix(p, tp, t) + rand_dir(uid * 3u + 17u) * sin(t * PI) * morph_arc;
 		c = mix(c, tcol, t);
 		n = normalize(mix(n, tn, t) + vec3(1e-6));
+		curv = mix(curv, texelFetch(target_curv_tex, tc, 0).r, t);
 	}
 
 	// --- vibrate: every point shivers around its own spot
@@ -244,6 +267,9 @@ void vertex() {
 
 	// --- debris: points knocked off by carve(), flying on their own velocity
 	vec4 st = texelFetch(state_tex, tc, 0);
+	if (st.x >= 0.0 && cloud_time >= st.x) {
+		at_rest = false;
+	}
 	if (st.x >= 0.0) {
 		float dt = max(cloud_time - st.x, 0.0);
 		if (cloud_time >= st.x) {
@@ -289,16 +315,31 @@ void vertex() {
 
 	// --- point size: constant world-space size, converted to pixels
 	vec4 vp = MODELVIEW_MATRIX * vec4(p, 1.0);
-	float world_size = point_size * length(MODELVIEW_MATRIX[0].xyz) * size_scale;
+	float obj_scale = length(MODELVIEW_MATRIX[0].xyz);
+	float world_size = point_size * obj_scale * size_scale * (splats ? splat_scale : 1.0);
+	// A tilted disc can poke slightly past a sprite of its own diameter, so
+	// splat sprites are drawn a bit bigger than the disc.
+	float sprite_size = world_size * (splats ? 1.2 : 1.0);
 	// abs(): the Compatibility renderer flips Y (negative [1][1]) when
 	// rendering to a texture.
-	float px = world_size * abs(PROJECTION_MATRIX[1][1]) * 0.5 * VIEWPORT_SIZE.y;
-	if (PROJECTION_MATRIX[3][3] < 0.5) {
+	float px = sprite_size * abs(PROJECTION_MATRIX[1][1]) * 0.5 * VIEWPORT_SIZE.y;
+	bool ortho = PROJECTION_MATRIX[3][3] > 0.5;
+	if (!ortho) {
 		px /= max(-vp.z, 1e-3); // perspective
 	}
 	v_alive = size_scale > 0.02 ? 1.0 : 0.0;
 	POINT_SIZE = v_alive > 0.5 ? clamp(px, min_pixel_size, max_pixel_size) : 1.0;
 	v_px = POINT_SIZE;
+	// Sizes in view space, corrected for the pixel clamp.
+	float clamp_ratio = POINT_SIZE / max(px, 1e-4);
+	v_sprite = 0.5 * sprite_size * clamp_ratio;
+	v_radius = 0.5 * world_size * clamp_ratio;
+	v_center = vp.xyz;
+	v_vnormal = normalize(mat3(MODELVIEW_MATRIX) * n);
+	v_local = p;
+	v_flags = (ortho ? 1.0 : 0.0) + (clip_to_bounds && at_rest ? 2.0 : 0.0);
+	v_ysign = PROJECTION_MATRIX[1][1] < 0.0 ? -1.0 : 1.0;
+	v_curv = curv / max(obj_scale, 1e-6);
 	v_color = c;
 	v_glow = glow;
 }
@@ -307,14 +348,53 @@ void fragment() {
 	if (v_alive < 0.5) {
 		discard;
 	}
-	// Rounding only helps once a point covers several pixels; below that it
-	// just punches holes in the surface.
-	if (round_points && v_px > 3.5) {
-		vec2 q = POINT_COORD * 2.0 - 1.0;
-		if (dot(q, q) > 1.0) {
+	vec2 pc = POINT_COORD * 2.0 - 1.0;
+	// Point on the sprite's plane (view space) that this pixel looks at.
+	vec3 q = v_center + vec3(pc.x * v_sprite, -pc.y * v_sprite * v_ysign, 0.0);
+	vec3 hit = q;
+	bool ortho = mod(v_flags, 2.0) > 0.5;
+	if (splats) {
+		// Intersect this pixel's view ray with the dot's tangent-plane disc.
+		vec3 ro = ortho ? vec3(q.xy, 0.0) : vec3(0.0);
+		vec3 rd = ortho ? vec3(0.0, 0.0, -1.0) : normalize(q);
+		float denom = dot(rd, v_vnormal);
+		if (abs(denom) < 0.02) {
+			discard; // seen exactly edge-on: neighbouring discs cover this
+		}
+		hit = ro + rd * (dot(v_center - ro, v_vnormal) / denom);
+		vec3 off = hit - v_center;
+		if (dot(off, off) > v_radius * v_radius) {
+			discard;
+		}
+		// Bend the normal across the disc by the surface curvature, so the
+		// shading of neighbouring discs meets seamlessly (like a smooth mesh).
+		NORMAL = normalize(v_vnormal + off * v_curv);
+		if (v_flags > 1.5) {
+			// Back to local space; MODEL/VIEW are rotation + uniform scale.
+			mat3 mv = mat3(VIEW_MATRIX) * mat3(MODEL_MATRIX);
+			vec3 lo = v_local + (transpose(mv) * off) / dot(mv[0], mv[0]);
+			vec3 eps = bounds_size * 0.0005 + vec3(1e-5);
+			if (any(lessThan(lo, bounds_min - eps)) || any(greaterThan(lo, bounds_min + bounds_size + eps))) {
+				discard;
+			}
+		}
+	} else if (round_points && v_px > 3.5) {
+		// Rounding only helps once a point covers several pixels; below that
+		// it just punches holes in the surface.
+		if (dot(pc, pc) > 1.0) {
 			discard;
 		}
 	}
+	// Exact depth of the disc at this pixel, so discs intersect like real
+	// geometry and nothing behind the surface can show through.
+	vec4 clip = PROJECTION_MATRIX * vec4(hit, 1.0);
+	float ndc_z = clip.z / clip.w;
+#if CURRENT_RENDERER == RENDERER_COMPATIBILITY
+	DEPTH = ndc_z * 0.5 + 0.5;
+#else
+	DEPTH = ndc_z;
+#endif
+	LIGHT_VERTEX = hit; // per-pixel lighting and shadows across the disc
 	vec3 col = srgb_to_linear(v_color.rgb);
 	if (unshaded) {
 		ALBEDO = vec3(0.0);

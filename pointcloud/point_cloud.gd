@@ -75,6 +75,17 @@ static var _clock_frame := -1
 	set(v):
 		max_pixel_size = v
 		_sp(&"max_pixel_size", v)
+## Draw each dot as a disc lying on the surface with exact per-pixel depth,
+## so dots fuse into a continuous, solid-looking surface.
+@export var splats := true:
+	set(v):
+		splats = v
+		_sp(&"splats", v)
+## While at rest, trim dots at the bounding box so box edges stay sharp.
+@export var clip_to_bounds := true:
+	set(v):
+		clip_to_bounds = v
+		_sp(&"clip_to_bounds", v)
 @export var round_points := true:
 	set(v):
 		round_points = v
@@ -221,6 +232,8 @@ var _tex_h := 1
 var _pos_tex: ImageTexture
 var _col_tex: ImageTexture
 var _nrm_tex: ImageTexture
+var _curv_tex: ImageTexture
+var _tcurv_tex: ImageTexture
 var _state_tex: ImageTexture
 var _tpos_tex: ImageTexture
 var _tcol_tex: ImageTexture
@@ -273,7 +286,7 @@ func _init() -> void:
 			&"wobble_amplitude", &"wobble_frequency", &"wobble_speed", &"explode", &"explode_center",
 			&"dissolve", &"dissolve_direction", &"dissolve_directional", &"dissolve_spread",
 			&"dissolve_drift", &"dissolve_edge_color", &"glow_strength", &"morph", &"morph_stagger",
-			&"morph_arc", &"debris_lifetime", &"debris_gravity", &"density"]:
+			&"morph_arc", &"debris_lifetime", &"debris_gravity", &"density", &"splats", &"clip_to_bounds"]:
 		_sp(p, get(p))
 
 
@@ -534,6 +547,8 @@ func set_morph_target(t: PointCloudData) -> void:
 	_tpos_tex = _upload(_tpos_tex, _padded_v3(t.positions, total).to_byte_array(), Image.FORMAT_RGBF)
 	_tcol_tex = _upload_colors(_tcol_tex, t.colors)
 	_tnrm_tex = _upload(_tnrm_tex, _padded_v3(t.normals, total).to_byte_array(), Image.FORMAT_RGBF)
+	_tcurv_tex = _upload(_tcurv_tex, _padded_f(t.curvatures, total).to_byte_array(), Image.FORMAT_RF)
+	_sp(&"target_curv_tex", _tcurv_tex)
 	_sp(&"target_pos_tex", _tpos_tex)
 	_sp(&"target_col_tex", _tcol_tex)
 	_sp(&"target_nrm_tex", _tnrm_tex)
@@ -550,6 +565,7 @@ func _finish_morph() -> void:
 	_tpos_tex = null
 	_tcol_tex = null
 	_tnrm_tex = null
+	_tcurv_tex = null
 	var old_state := _state
 	data = t          # re-uploads; also clears skinning if the target isn't skinned
 	if old_state.size() == _state.size():
@@ -633,6 +649,8 @@ func _rebuild(keep_state: bool) -> void:
 	_pos_tex = _upload(_pos_tex, _padded_v3(data.positions, total).to_byte_array(), Image.FORMAT_RGBF)
 	_col_tex = _upload_colors(_col_tex, data.colors)
 	_nrm_tex = _upload(_nrm_tex, _padded_v3(data.normals, total).to_byte_array(), Image.FORMAT_RGBF)
+	_curv_tex = _upload(_curv_tex, _padded_f(data.curvatures, total).to_byte_array(), Image.FORMAT_RF)
+	_sp(&"curv_tex", _curv_tex)
 	_sp(&"pos_tex", _pos_tex)
 	_sp(&"col_tex", _col_tex)
 	_sp(&"nrm_tex", _nrm_tex)
@@ -640,6 +658,7 @@ func _rebuild(keep_state: bool) -> void:
 		_sp(&"target_pos_tex", _pos_tex)
 		_sp(&"target_col_tex", _col_tex)
 		_sp(&"target_nrm_tex", _nrm_tex)
+		_sp(&"target_curv_tex", _curv_tex)
 
 	if not keep_state or _state.size() != total * 4:
 		_state.resize(total * 4)
@@ -731,6 +750,12 @@ func _reset_state() -> void:
 func _sp(param: StringName, value: Variant) -> void:
 	if _mat:
 		_mat.set_shader_parameter(param, value)
+
+
+static func _padded_f(arr: PackedFloat32Array, total: int) -> PackedFloat32Array:
+	var a := arr.duplicate()
+	a.resize(total)
+	return a
 
 
 static func _padded_v3(arr: PackedVector3Array, total: int) -> PackedVector3Array:

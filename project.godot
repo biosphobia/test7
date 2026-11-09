@@ -12,7 +12,7 @@ config_version=5
 
 config/name="Point Cloud World"
 config/description="Everything is made of points: a Godot 4 point-cloud rendering & effects framework with a playable demo."
-run/main_scene="res://demo/main.tscn"
+run/main_scene="res://launcher/launcher.tscn"
 config/features=PackedStringArray("4.4", "Forward Plus")
 config/icon="res://icon.svg"
 
@@ -24,3 +24,4 @@ window/size/viewport_height=900
 [rendering]
 
 renderer/rendering_method="forward_plus"
+anti_aliasing/quality/screen_space_aa=1
