@@ -34,6 +34,17 @@ extends Resource
 @export var aabb := AABB()
 ## Point diameter that makes the surface look closed at this density.
 @export var suggested_point_size := 0.02
+## Points are stored as [surface points | interior points], each part in
+## progressive order (every prefix is evenly spread). This is how many
+## surface points come first; -1 = all points are surface. The renderer skips interior points until something exposes
+## them (carving, dissolve, explode, morph), and level of detail draws a
+## prefix of each part.
+@export var surface_count := -1
+
+
+func get_surface_count() -> int:
+	var n := size()
+	return n if surface_count < 0 or surface_count > n else surface_count
 
 
 func size() -> int:
@@ -57,20 +68,29 @@ func recompute_aabb() -> void:
 	aabb = AABB(mn, mx - mn)
 
 
-## Returns a cloud with exactly `count` points: a prefix of this one when
-## shrinking (sampled clouds are in random order, so a prefix is a random
-## subset) and random repeats when growing.
+## Returns a cloud with exactly `count` points: a prefix of each part (surface
+## and interior) when shrinking, since each part is in progressive order, and
+## random repeats when growing. Keeps the surface/interior layout.
 func resampled(count: int, rng_seed := 7) -> PointCloudData:
 	var n := size()
 	if n == count or n == 0:
 		return self
+	var ns := get_surface_count()
+	var new_ns := clampi(roundi(float(count) * ns / n), 0, count)
+	if ns == n:
+		new_ns = count
 	var idx := PackedInt32Array()
 	idx.resize(count)
 	var rng := RandomNumberGenerator.new()
 	rng.seed = rng_seed
 	for i in count:
-		idx[i] = i if i < n else rng.randi_range(0, n - 1)
+		if i < new_ns:
+			idx[i] = i if i < ns else rng.randi_range(0, maxi(ns - 1, 0))
+		else:
+			var k := i - new_ns
+			idx[i] = ns + k if ns + k < n else rng.randi_range(mini(ns, n - 1), n - 1)
 	var out := picked(idx)
+	out.surface_count = new_ns if ns < n else -1
 	out.suggested_point_size = suggested_point_size * sqrt(float(n) / float(count))
 	return out
 
@@ -136,7 +156,57 @@ func merge(other: PointCloudData, xform := Transform3D.IDENTITY) -> void:
 	# Weighted average keeps the point size sensible for the combined model.
 	var total := float(size())
 	suggested_point_size = (suggested_point_size * n_before + o.suggested_point_size * o.size()) / total
+	# Restore the [surface | interior] layout, each part interleaved, so level of
+	# detail still draws an even sample of every piece.
+	var ns_a := n_before if surface_count < 0 else mini(surface_count, n_before)
+	var ns_b := o.get_surface_count()
+	var surf := PackedInt32Array()
+	var inner := PackedInt32Array()
+	for i in n_before:
+		if i < ns_a:
+			surf.append(i)
+		else:
+			inner.append(i)
+	for i in o.size():
+		if i < ns_b:
+			surf.append(n_before + i)
+		else:
+			inner.append(n_before + i)
+	# Interleave the two pieces evenly so any prefix samples both (keeps the
+	# progressive order level of detail relies on, approximately).
+	surf = _interleave(surf, ns_a)
+	inner = _interleave(inner, n_before - ns_a)
+	var order := surf.duplicate()
+	order.append_array(inner)
+	var re := picked(order)
+	positions = re.positions
+	normals = re.normals
+	colors = re.colors
+	curvatures = re.curvatures
+	bone_indices = re.bone_indices
+	bone_weights = re.bone_weights
+	surface_count = surf.size()
 	recompute_aabb()
+
+
+## Merges a[0, split) and a[split, end) by their relative position, so a
+## prefix of the result takes the same fraction of each.
+static func _interleave(a: PackedInt32Array, split: int) -> PackedInt32Array:
+	var na := split
+	var nb := a.size() - split
+	var out := PackedInt32Array()
+	out.resize(a.size())
+	var i := 0
+	var j := 0
+	for k in a.size():
+		var take_a := j >= nb or (i < na and float(i) / maxf(na, 1) <= float(j) / maxf(nb, 1))
+		if take_a:
+			out[k] = a[i]
+			i += 1
+		else:
+			out[k] = a[split + j]
+			j += 1
+	return out
 
 
 func _fill_defaults() -> void:

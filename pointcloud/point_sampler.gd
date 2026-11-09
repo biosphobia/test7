@@ -187,8 +187,12 @@ static func from_mesh(mesh: Mesh, count: int, opts: Dictionary = {}) -> PointClo
 	# Triangles are chosen stratified (each gets its fair share of points) and
 	# points inside a triangle follow the R2 low-discrepancy sequence. That
 	# spreads points far more evenly than plain random sampling, so surfaces
-	# close up with smaller points. Results are written in shuffled order so the
-	# point order stays random (resampled() and the shader seeds rely on it).
+	# close up with smaller points.
+	#
+	# The output order is *progressive*: strata are visited in bit-reversed
+	# order and each triangle hands out its R2 points in that order, so every
+	# prefix of the list is itself evenly spread over the surface. Level of
+	# detail draws such a prefix, and it stays gap-free at every detail level.
 	out.positions.resize(count)
 	out.normals.resize(count)
 	out.colors.resize(count)
@@ -251,28 +255,21 @@ static func from_mesh(mesh: Mesh, count: int, opts: Dictionary = {}) -> PointClo
 		tri_s[k + 5] = a00 * tx.x * tx.z + sym * (tx.x * ty.z + ty.x * tx.z) + a11 * ty.x * ty.z
 		tri_s[k + 6] = a00 * tx.y * tx.z + sym * (tx.y * ty.z + ty.y * tx.z) + a11 * ty.y * ty.z
 
-	var slot := PackedInt32Array()
-	slot.resize(count)
-	for i in count:
-		slot[i] = i
-	for i in range(count - 1, 0, -1):
-		var j := rng.randi_range(0, i)
-		var tmp := slot[i]
-		slot[i] = slot[j]
-		slot[j] = tmp
 	var tri_counter := PackedInt32Array()
 	tri_counter.resize(tri_count)
 	# Surface points first (one evenly spread pass), then interior points.
 	var n_inside := int(count * fill_fraction)
+	# Output order: [surface | interior] (see PointCloudData.surface_count),
+	# each part progressive.
 	var n_surface := count - n_inside
+	var surface_order := progressive_order(n_surface)
+	var inside_order := progressive_order(n_inside)
 	var skin_gap := sqrt(total / maxf(1.0, n_surface)) * SIZE_FACTOR * 1.5
 
-	for si in count:
-		var o := slot[si]
-		var inside := si >= n_surface
-		var r := (si + rng.randf()) * total / n_surface
-		if inside:
-			r = (si - n_surface + rng.randf()) * total / n_inside
+	for o in count:
+		var inside := o >= n_surface
+		var r := (surface_order[o] + rng.randf()) * total / n_surface if not inside \
+				else (inside_order[o - n_surface] + rng.randf()) * total / n_inside
 		var t := mini(cum.bsearch(r), tri_count - 1)
 		var i0 := tri[t * 3]
 		var i1 := tri[t * 3 + 1]
@@ -339,6 +336,7 @@ static func from_mesh(mesh: Mesh, count: int, opts: Dictionary = {}) -> PointClo
 				out.bone_weights[o * 4 + k] = W[dom * 4 + k]
 
 	out.suggested_point_size = sqrt(total / maxf(1.0, n_surface)) * SIZE_FACTOR
+	out.surface_count = n_surface
 
 	if opts.has("transform"):
 		var xf: Transform3D = opts["transform"]
@@ -347,6 +345,29 @@ static func from_mesh(mesh: Mesh, count: int, opts: Dictionary = {}) -> PointClo
 		out.suggested_point_size *= xf.basis.get_scale().x
 		out.curvatures = PointCloudData.transformed_tensors(out.curvatures, xf.basis)
 	out.recompute_aabb()
+	return out
+
+
+## A permutation of [0, n) in bit-reversed order (0, n/2, n/4, 3n/4, ...):
+## every prefix samples the range evenly.
+static func progressive_order(n: int) -> PackedInt32Array:
+	var out := PackedInt32Array()
+	out.resize(n)
+	if n <= 1:
+		return out
+	var bits := 0
+	while (1 << bits) < n:
+		bits += 1
+	var size := 1 << bits
+	var rev := PackedInt32Array()
+	rev.resize(size)
+	var k := 0
+	for i in size:
+		var r := (rev[i >> 1] >> 1) | ((i & 1) << (bits - 1))
+		rev[i] = r
+		if r < n:
+			out[k] = r
+			k += 1
 	return out
 
 
@@ -453,34 +474,52 @@ static func match_order(source: PointCloudData, target: PointCloudData) -> Point
 	var n := source.size()
 	if target.size() != n:
 		target = target.resampled(n)
-	var src_rank := _spatial_order(source)
-	var dst_rank := _spatial_order(target)
+	var ns := source.get_surface_count()
 	var idx := PackedInt32Array()
 	idx.resize(n)
+	if ns == target.get_surface_count():
+		# Surface pairs with surface and interior with interior, so the result
+		# keeps the [surface | interior] layout.
+		for part in [[0, ns], [ns, n]]:
+			var src_rank := _spatial_order(source, part[0], part[1])
+			var dst_rank := _spatial_order(target, part[0], part[1])
+			for k in src_rank.size():
+				idx[src_rank[k]] = dst_rank[k]
+		var out := target.picked(idx)
+		out.surface_count = source.surface_count
+		return out
+	var src_all := _spatial_order(source)
+	var dst_all := _spatial_order(target)
 	for k in n:
-		idx[src_rank[k]] = dst_rank[k]
+		idx[src_all[k]] = dst_all[k]
 	return target.picked(idx)
 
 
 ## Returns the cloud reordered by height band and angle. Clouds that were all
 ## sorted this way (and have equal counts) already pair up nicely, so you can
 ## call PointCloud.morph_to(target, duration, false) and skip match_order().
+##
+## Note: sorted clouds lose their progressive order, which level of detail relies
+## on (it draws a prefix of the points). Prefer match_order().
 static func sort_spatially(d: PointCloudData) -> PointCloudData:
 	return d.picked(_spatial_order(d))
 
 
-static func _spatial_order(d: PointCloudData) -> PackedInt32Array:
-	var n := d.size()
+## Indices in [from, to) ordered by height band, then angle.
+static func _spatial_order(d: PointCloudData, from := 0, to := -1) -> PackedInt32Array:
+	if to < 0:
+		to = d.size()
+	var n := to - from
 	var bands := 40
 	var c := d.aabb.get_center()
 	var inv := Vector3.ONE / d.aabb.size.max(Vector3.ONE * 1e-4)
 	var keys := PackedInt64Array()
 	keys.resize(n)
 	for i in n:
-		var q := (d.positions[i] - c) * inv
+		var q := (d.positions[from + i] - c) * inv
 		var band := clampi(int((q.y + 0.5) * bands), 0, bands - 1)
 		var ang := clampi(int((atan2(q.z, q.x) / TAU + 0.5) * 65535.0), 0, 65535)
-		keys[i] = (band << 40) | (ang << 24) | i
+		keys[i] = (band << 40) | (ang << 24) | (from + i)
 	keys.sort()
 	var order := PackedInt32Array()
 	order.resize(n)

@@ -43,6 +43,8 @@ Open the folder in **Godot 4.4 or newer** and press Play (`demo/main.tscn`).
 | V / G | toggle vibrate / wobble |
 | H | heal: carved-off points fly back into place |
 | [ / ] | halve / double the dots per point on the aimed object (1–16) |
+| - / = / 0 | less / more detail by hand, or back to automatic (targets 60 fps) |
+| F10 | switch renderer: Compatibility (default, fastest) ↔ Forward+ |
 | R | restore everything instantly |
 | Esc | free the mouse (click to recapture) |
 
@@ -175,21 +177,56 @@ Movie Maker renders at a fixed frame rate however slow the machine is. The
 point clouds' clock follows game time (`PointCloud.now()`), so all effects
 stay in sync in the recording.
 
-## Performance notes and limits
+## Performance
 
-* GPU cost scales with the total dot count (stored points × density). Ten
-  million dots or so should be fine on a desktop GPU; lower `density` for
-  weaker hardware. Shadow-casting clouds are drawn again for each shadow
-  cascade, so switch `cast_shadow` off where shadows aren't visible (the demo
-  does this for the ground). Points beyond the camera's culling bounds are
-  free, because each cloud is culled as a whole.
-* Sampling runs in GDScript at roughly 1 µs per point, so 300k points take about
-  0.3 s. For big clouds, bake once and save the `.res` file.
-* Carving/painting re-uploads that cloud's state/colour texture (16 bytes per
-  point), at most once per frame.
+The demo targets 60 fps on modest GPUs. It holds about 3.5 million stored
+points but draws only around 0.5–1 million dots per frame, and auto quality
+trades detail to hold the target. The main techniques:
+
+* **Level of detail.** Points are stored in *progressive* order: every prefix
+  of the list is evenly spread over the surface (bit-reversed strata plus
+  per-triangle R2 sequences). Each frame a cloud estimates how big it is on
+  screen and draws only the prefix it needs for `PointCloud.lod_spacing_px`
+  (default 2 px) between points, enlarging them to keep the surface closed.
+  It's a single `MultiMesh.visible_instance_count` change, with no CPU work
+  per point.
+* **Interior points only when exposed.** Points are stored as
+  `[surface | interior]`; the interior fill is drawn only while something
+  reveals it (carving, dissolve, explode, morph).
+* **Back-facing dots are dropped** in the vertex shader (and for shadows,
+  dots facing away from the light).
+* **Cheap shadows.** A cloud doesn't cast shadows itself; a hidden copy with a
+  quarter of the dots does, and the demo sun uses 2 cascades instead of 4.
+* **Early depth test.** The default shader keeps each dot's flat depth, so the
+  depth prepass rejects hidden pixels before they're shaded. Set
+  `PointCloud.exact_depth = true` for the slower variant that writes exact
+  per-pixel depth.
+* **Smaller data.** 8-bit colours and half-float normals and curvature; the
+  debris and ripple lookups are skipped while nothing is carved or hit.
+* **Tiled terrain.** Big surfaces such as the demo ground are split into
+  tiles, so off-screen tiles are culled and distant ones get LOD.
+* **Lightweight renderer by default.** The project uses Godot's Compatibility
+  (OpenGL) renderer, which is much cheaper on weak GPUs; it did a demo frame
+  about 3.6× faster than Forward+ in testing. Press **F10** in game to switch
+  to Forward+ (nicer, heavier). The launcher restarts the game with the
+  chosen renderer and remembers it.
+* **Auto quality.** `PointCloudQuality` measures GPU time and adjusts
+  `lod_spacing_px` (and, if needed, the 3D render scale with FSR upscaling)
+  to hold the target frame rate. Where the driver doesn't report GPU time
+  (common with Compatibility), it works from frame time: it steps down when
+  below target and periodically probes back up. In the demo, `-` / `=` set detail by hand and
+  `0` returns to automatic. The HUD shows how many dots are drawn.
+
+Measured with CPU-only software rendering (so only the ratio means
+anything), a demo frame went from 9.6 s to about 0.45 s at the same detail,
+roughly 20× less work per frame, before auto quality does anything.
+
+### Limits
+
+* Startup samples every model in GDScript (about 1.5 µs per point), so the
+  demo takes 10–15 s to build. Bake large clouds to `.res` files.
 * Collision uses ordinary `CollisionShape3D`s and doesn't follow carved holes.
-* Debris and dissolve are in the cloud's local space, so the debris moves with
-  the object.
-* `point_size` is set in world units and clamped to `max_pixel_size`. In the
-  Compatibility renderer, very close points top out at the driver's maximum
-  point size.
+* Debris and dissolve are in the cloud's local space, so debris moves with the
+  object.
+* If you sort points yourself (e.g. `PointSampler.sort_spatially`), level of
+  detail will thin them unevenly; use `match_order` for morph targets.

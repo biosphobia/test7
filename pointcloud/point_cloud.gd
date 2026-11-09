@@ -23,6 +23,21 @@ signal heal_finished
 const TEX_WIDTH := 2048
 const MAX_IMPACTS := 8
 const DEFAULT_SHADER := preload("res://pointcloud/point_cloud.gdshader")
+const EXACT_SHADER := preload("res://pointcloud/point_cloud_exact.gdshader")
+## LOD never draws fewer points than this per cloud.
+const LOD_MIN_POINTS := 1500
+## Shadows are cast by a hidden low-detail copy using this fraction of the
+## points drawn on screen (shadow maps are blurry anyway, and every shadow
+## cascade redraws all casters).
+const SHADOW_DETAIL := 0.25
+
+## Level of detail, shared by all clouds: the on-screen spacing (pixels) to aim
+## for between drawn points. Clouds draw only as many points as they need for
+## that and enlarge them to match. Raise it for speed (PointCloudQuality does
+## this automatically), lower it for detail.
+static var lod_spacing_px := 2.0
+## Turns level of detail off everywhere (always draw every point).
+static var lod_enabled := true
 
 ## Dots are drawn in instanced batches of this many points, so a cloud of
 ## any size costs one small shared vertex buffer.
@@ -135,12 +150,19 @@ static var _clock_frame := -1
 	set(v):
 		cull_margin = v
 		_update_aabb()
-## Use your own copy of point_cloud.gdshader (keep the uniforms).
+## Use your own shader (include point_cloud.gdshaderinc to keep everything).
 @export var shader_override: Shader:
 	set(v):
 		shader_override = v
-		if _mat:
-			_mat.shader = v if v else DEFAULT_SHADER
+		_apply_shader()
+## Write each disc's exact per-pixel depth. Slightly nicer where surfaces
+## meet, but disables the GPU's early depth test, so it's much slower.
+@export var exact_depth := false:
+	set(v):
+		exact_depth = v
+		_apply_shader()
+## Draw fewer, larger points when the cloud is small on screen.
+@export var lod := true
 
 @export_group("Vibrate")
 @export_range(0.0, 0.5, 0.001) var vibrate_amplitude := 0.0:
@@ -262,6 +284,12 @@ var _skin_in_use: Skin
 var _bind_bones := PackedInt32Array()
 var _bone_mats: Array[Transform3D] = []
 
+var _shadow_mat: ShaderMaterial
+var _shadow_mm: MultiMesh
+var _shadow_inst := RID()
+var _drawn := Vector3i(-1, -1, -1)         # surface points, interior points, density
+var _shadow_drawn := Vector3i(-1, -1, -1)
+var _has_debris := false
 var _state := PackedFloat32Array()
 var _state_dirty := false
 var _colors_dirty := false
@@ -289,7 +317,8 @@ static func now() -> float:
 
 func _init() -> void:
 	_mat = ShaderMaterial.new()
-	_mat.shader = DEFAULT_SHADER
+	_shadow_mat = ShaderMaterial.new()
+	_apply_shader()
 	RenderingServer.instance_geometry_set_material_override(get_instance(), _mat.get_rid())
 	_impact_pos.resize(MAX_IMPACTS)
 	_impact_params.resize(MAX_IMPACTS)
@@ -308,6 +337,14 @@ func _init() -> void:
 
 func _enter_tree() -> void:
 	add_to_group(&"point_clouds")
+	if not Engine.is_editor_hint() and not _shadow_inst.is_valid():
+		_shadow_inst = RenderingServer.instance_create()
+		RenderingServer.instance_set_scenario(_shadow_inst, get_world_3d().scenario)
+		RenderingServer.instance_geometry_set_material_override(_shadow_inst, _shadow_mat.get_rid())
+		RenderingServer.instance_geometry_set_cast_shadows_setting(_shadow_inst,
+				RenderingServer.SHADOW_CASTING_SETTING_SHADOWS_ONLY)
+		if _shadow_mm:
+			RenderingServer.instance_set_base(_shadow_inst, _shadow_mm.get_rid())
 
 
 func _ready() -> void:
@@ -324,10 +361,13 @@ func _process(delta: float) -> void:
 		_clock += delta
 	_sp(&"cloud_time", now())
 	_poll_grid_task()
+	_update_lod()
+	_sync_shadow_proxy()
 	if _state_dirty:
 		_state_dirty = false
 		_state_tex = _upload(_state_tex, _state.to_byte_array(), Image.FORMAT_RGBAF)
 		_sp(&"state_tex", _state_tex)
+		_sp(&"has_debris", _has_debris)
 	if _colors_dirty:
 		_colors_dirty = false
 		_col_tex = _upload_colors(_col_tex, data.colors)
@@ -410,9 +450,17 @@ func get_point_count() -> int:
 	return data.size() if data else 0
 
 
-## Number of dots drawn (stored points × density).
+## Number of dots at full detail (stored points × density).
 func get_dot_count() -> int:
 	return get_point_count() * density
+
+
+## Number of dots actually drawn this frame after level of detail (main view,
+## not counting the shadow copy).
+func get_drawn_dot_count() -> int:
+	if not is_visible_in_tree() or _drawn.x < 0:
+		return 0
+	return (_drawn.x + _drawn.y) * density
 
 
 ## Re-uploads all point data after you changed `data` arrays from code.
@@ -467,6 +515,7 @@ func carve(world_pos: Vector3, radius: float, force := 2.0, ragged := 0.35) -> v
 			var vel := (dir + _rand_unit(rng) * 0.6) * force * rng.randf_range(0.4, 1.4)
 			var k := i * 4
 			_state[k] = t + (d / r) * 0.08  # hole opens from the centre outward
+			_has_debris = true
 			_state[k + 1] = vel.x
 			_state[k + 2] = vel.y
 			_state[k + 3] = vel.z
@@ -481,6 +530,7 @@ func impact(world_pos: Vector3, strength := 0.15, speed := 4.0, width := 0.25, d
 	_impact_next = (_impact_next + 1) % MAX_IMPACTS
 	_sp(&"impact_pos", _impact_pos)
 	_sp(&"impact_params", _impact_params)
+	_sp(&"impacts_until", now() + 4.0)
 
 
 ## Instantly puts every carved point back and clears dissolve/explode.
@@ -562,7 +612,7 @@ func set_morph_target(t: PointCloudData) -> void:
 	var total := TEX_WIDTH * _tex_h
 	_tpos_tex = _upload(_tpos_tex, _padded_v3(t.positions, total).to_byte_array(), Image.FORMAT_RGBF)
 	_tcol_tex = _upload_colors(_tcol_tex, t.colors)
-	_tnrm_tex = _upload(_tnrm_tex, _padded_v3(t.normals, total).to_byte_array(), Image.FORMAT_RGBF)
+	_tnrm_tex = _upload(_tnrm_tex, _padded_v3(t.normals, total).to_byte_array(), Image.FORMAT_RGBF, Image.FORMAT_RGBAH)
 	_tcurv_tex = _upload_tensors(_tcurv_tex, t.curvatures)
 	_sp(&"target_curv_tex", _tcurv_tex)
 	_sp(&"target_pos_tex", _tpos_tex)
@@ -586,6 +636,7 @@ func _finish_morph() -> void:
 	data = t          # re-uploads; also clears skinning if the target isn't skinned
 	if old_state.size() == _state.size():
 		_state = old_state  # carved holes survive the morph
+		_has_debris = true
 		_state_dirty = true
 	morph = 0.0
 	morph_finished.emit()
@@ -664,7 +715,7 @@ func _rebuild(keep_state: bool) -> void:
 
 	_pos_tex = _upload(_pos_tex, _padded_v3(data.positions, total).to_byte_array(), Image.FORMAT_RGBF)
 	_col_tex = _upload_colors(_col_tex, data.colors)
-	_nrm_tex = _upload(_nrm_tex, _padded_v3(data.normals, total).to_byte_array(), Image.FORMAT_RGBF)
+	_nrm_tex = _upload(_nrm_tex, _padded_v3(data.normals, total).to_byte_array(), Image.FORMAT_RGBF, Image.FORMAT_RGBAH)
 	_curv_tex = _upload_tensors(_curv_tex, data.curvatures)
 	_sp(&"curv_tex", _curv_tex)
 	_sp(&"pos_tex", _pos_tex)
@@ -709,20 +760,102 @@ func _build_mesh(n: int) -> void:
 	# The shader finds its dot from INSTANCE_ID * CHUNK + VERTEX_ID.
 	if _mesh == null:
 		_mesh = _shared_chunk_mesh()
-	if _multimesh == null:
-		_multimesh = MultiMesh.new()
-		_multimesh.transform_format = MultiMesh.TRANSFORM_3D
-		_multimesh.mesh = _mesh
-	var dots := n * density
-	var instances := ceili(float(dots) / CHUNK)
-	if _multimesh.instance_count != instances:
-		_multimesh.instance_count = instances
-		for i in instances:
-			_multimesh.set_instance_transform(i, Transform3D.IDENTITY)
+	for i in 2:
+		var mm := _multimesh if i == 0 else _shadow_mm
+		if mm == null:
+			mm = MultiMesh.new()
+			mm.transform_format = MultiMesh.TRANSFORM_3D
+			mm.mesh = _mesh
+			if i == 0:
+				_multimesh = mm
+			else:
+				_shadow_mm = mm
+				if _shadow_inst.is_valid():
+					RenderingServer.instance_set_base(_shadow_inst, mm.get_rid())
+		var instances := ceili(float(n * density) / CHUNK)
+		if mm.instance_count != instances:
+			mm.instance_count = instances
+			for k in instances:
+				mm.set_instance_transform(k, Transform3D.IDENTITY)
 	_mesh_count = n
-	_sp(&"dot_count", dots)
+	_drawn = Vector3i(-1, -1, -1)
+	_shadow_drawn = Vector3i(-1, -1, -1)
+	_update_lod()
 	_update_aabb()
 	set_base(_multimesh.get_rid())
+
+
+## Level of detail. Points are stored as [surface | interior], each part in
+## progressive order (see PointSampler), so the first k points of a part are
+## an even sample of it.
+## Draw only as many surface points as the cloud's on-screen size needs (and
+## scale them up to keep the surface closed), and interior points only while
+## something exposes them.
+func _update_lod() -> void:
+	if _multimesh == null or data == null or data.size() == 0:
+		return
+	var n := data.size()
+	var ns := data.get_surface_count()
+	var ni := n - ns
+	var f := 1.0
+	if lod and lod_enabled and not Engine.is_editor_hint():
+		var cam := get_viewport().get_camera_3d() if is_inside_tree() else null
+		if cam:
+			var box := global_transform * data.aabb
+			var cp := cam.global_position
+			var d := maxf(cp.distance_to(cp.clamp(box.position, box.end)), cam.near)
+			var view_h := get_viewport().get_visible_rect().size.y
+			var px_per_unit := view_h / cam.size
+			if cam.projection == Camera3D.PROJECTION_PERSPECTIVE:
+				px_per_unit = view_h * 0.5 / tan(deg_to_rad(cam.fov) * 0.5) / d
+			var spacing := data.suggested_point_size / PointSampler.SIZE_FACTOR * _avg_scale()
+			f = pow(spacing * px_per_unit / lod_spacing_px, 2.0)
+			if f < 1.0:
+				# Quantise to steps of 1/sqrt(2) so counts don't change every frame.
+				f = pow(2.0, floorf(log(maxf(f, 1e-9)) / log(2.0) * 2.0) / 2.0)
+	f = minf(f, 1.0)
+	var interior := _has_debris or dissolve > 0.0 or explode != 0.0 or morph > 0.0
+	var a := clampi(ceili(ns * f), mini(ns, LOD_MIN_POINTS), ns)
+	var b := ceili(ni * f) if interior else 0
+	_set_drawn(_multimesh, _mat, Vector3i(a, b, density), ns, false)
+	var sa := clampi(ceili(a * SHADOW_DETAIL), mini(ns, LOD_MIN_POINTS / 2), ns)
+	_set_drawn(_shadow_mm, _shadow_mat, Vector3i(sa, ceili(b * SHADOW_DETAIL), density), ns, true)
+
+
+func _set_drawn(mm: MultiMesh, mat: ShaderMaterial, drawn: Vector3i, ns: int, shadow: bool) -> void:
+	if mm == null or drawn == (_shadow_drawn if shadow else _drawn):
+		return
+	if shadow:
+		_shadow_drawn = drawn
+	else:
+		_drawn = drawn
+	var dots := (drawn.x + drawn.y) * density
+	mm.visible_instance_count = ceili(float(dots) / CHUNK)
+	mat.set_shader_parameter(&"dot_count", dots)
+	mat.set_shader_parameter(&"surface_count", ns)
+	mat.set_shader_parameter(&"surface_drawn", drawn.x)
+	mat.set_shader_parameter(&"lod_scale", sqrt(float(maxi(ns, 1)) / float(maxi(drawn.x, 1))))
+
+
+## The visible cloud casts no shadow itself; a hidden low-detail copy does.
+func _sync_shadow_proxy() -> void:
+	if not _shadow_inst.is_valid():
+		return
+	var casts := cast_shadow != GeometryInstance3D.SHADOW_CASTING_SETTING_OFF and is_visible_in_tree() \
+			and _shadow_mm != null and data != null and data.size() > 0
+	RenderingServer.instance_set_visible(_shadow_inst, casts)
+	if casts:
+		RenderingServer.instance_set_transform(_shadow_inst, global_transform)
+	RenderingServer.instance_geometry_set_cast_shadows_setting(get_instance(),
+			RenderingServer.SHADOW_CASTING_SETTING_OFF)
+
+
+func _apply_shader() -> void:
+	var sh: Shader = shader_override if shader_override else (EXACT_SHADER if exact_depth else DEFAULT_SHADER)
+	if _mat:
+		_mat.shader = sh
+	if _shadow_mat:
+		_shadow_mat.shader = sh
 
 
 static var _chunk_mesh: ArrayMesh
@@ -745,8 +878,9 @@ func _update_aabb() -> void:
 
 
 func _set_custom_aabb(box: AABB) -> void:
-	if _multimesh:
-		_multimesh.custom_aabb = box.grow(cull_margin)
+	for mm in [_multimesh, _shadow_mm]:
+		if mm:
+			mm.custom_aabb = box.grow(cull_margin)
 
 
 func _update_point_size() -> void:
@@ -761,11 +895,15 @@ func _update_point_size() -> void:
 func _reset_state() -> void:
 	# Only x (detach time) matters while attached; -1 everywhere is fine.
 	_state.fill(-1.0)
+	_has_debris = false
+	_sp(&"has_debris", false)
 
 
 func _sp(param: StringName, value: Variant) -> void:
 	if _mat:
 		_mat.set_shader_parameter(param, value)
+	if _shadow_mat:
+		_shadow_mat.set_shader_parameter(param, value)
 
 
 ## Curvature tensors: 8 floats = two RGBA texels per point, side by side in
@@ -774,6 +912,7 @@ func _upload_tensors(tex: ImageTexture, arr: PackedFloat32Array) -> ImageTexture
 	var a := arr.duplicate()
 	a.resize(TEX_WIDTH * _tex_h * 8)
 	var img := Image.create_from_data(TEX_WIDTH * 2, _tex_h, false, Image.FORMAT_RGBAF, a.to_byte_array())
+	img.convert(Image.FORMAT_RGBAH)  # half floats: plenty for curvature, half the bandwidth
 	if tex and tex.get_width() == TEX_WIDTH * 2 and tex.get_height() == _tex_h:
 		tex.update(img)
 		return tex
@@ -793,11 +932,17 @@ func _upload_colors(tex: ImageTexture, cols: PackedColorArray) -> ImageTexture:
 	c.resize(total)
 	if had == 0:
 		c.fill(Color.WHITE)
-	return _upload(tex, c.to_byte_array(), Image.FORMAT_RGBAF)
+	# 8 bits per channel on the GPU: a quarter of the float bandwidth.
+	return _upload(tex, c.to_byte_array(), Image.FORMAT_RGBAF, Image.FORMAT_RGBA8)
 
 
-func _upload(tex: ImageTexture, bytes: PackedByteArray, fmt: Image.Format) -> ImageTexture:
+## Uploads raw data in format `fmt`, optionally converted (natively, fast)
+## to a smaller GPU format `store`.
+func _upload(tex: ImageTexture, bytes: PackedByteArray, fmt: Image.Format, store := -1) -> ImageTexture:
 	var img := Image.create_from_data(TEX_WIDTH, _tex_h, false, fmt, bytes)
+	if store >= 0:
+		img.convert(store)
+		fmt = store
 	if tex and tex.get_width() == TEX_WIDTH and tex.get_height() == _tex_h and tex.get_format() == fmt:
 		tex.update(img)
 		return tex
@@ -865,6 +1010,9 @@ func _poll_grid_task() -> void:
 
 
 func _exit_tree() -> void:
+	if _shadow_inst.is_valid():
+		RenderingServer.free_rid(_shadow_inst)
+		_shadow_inst = RID()
 	if _grid_task >= 0:
 		WorkerThreadPool.wait_for_task_completion(_grid_task)
 		_grid_task = -1

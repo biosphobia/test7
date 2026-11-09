@@ -7,6 +7,8 @@ var shot_path := "user://smoke.png"
 var density := 1
 var cam_dist := 5.5
 var splat := true
+var nocull := false
+var exact := false
 
 func _ready() -> void:
 	for a in OS.get_cmdline_user_args():
@@ -16,6 +18,10 @@ func _ready() -> void:
 			density = int(a.substr(10))
 		elif a == "--nosplat":
 			splat = false
+		elif a == "--nocull":
+			nocull = true
+		elif a == "--exact":
+			exact = true
 		elif a.begins_with("--dist="):
 			cam_dist = float(a.substr(7))
 	var t0 := Time.get_ticks_msec()
@@ -64,6 +70,9 @@ func _ready() -> void:
 	for c in [cube, sph, tor]:
 		c.density = density
 		c.splats = splat
+		c.exact_depth = exact
+		if nocull:
+			c.set("_mat").set_shader_parameter("backface_cull", false) if false else (c.get("_mat") as ShaderMaterial).set_shader_parameter("backface_cull", false)
 	cube.carve(cube.to_global(Vector3(0.5, 1.0, 1.0)), 0.6, 1.0)
 	sph.vibrate_amplitude = 0.01
 

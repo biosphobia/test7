@@ -13,6 +13,7 @@ const UPDATE_DIR := "user://update"
 const CACHED_PCK := "user://update/game.pck"
 const CACHED_VERSION := "user://update/version.json"
 const CHECK_TIMEOUT := 8.0
+const SETTINGS := "user://settings.cfg"
 
 var _label: Label
 var _bar: ProgressBar
@@ -34,7 +35,7 @@ static func running_version() -> Dictionary:
 
 func _ready() -> void:
 	var running := running_version()
-	print("Point Cloud World build: ", running.get("commit", "dev"))
+	print("Point Cloud World build: ", running.get("commit", "dev"), " renderer: ", RenderingServer.get_current_rendering_method())
 	# Started from the editor, or already relaunched on a downloaded pack.
 	if OS.has_feature("editor") or "--updated" in OS.get_cmdline_user_args() \
 			or "--no-update" in OS.get_cmdline_user_args():
@@ -64,15 +65,58 @@ func _run(running: Dictionary) -> void:
 	elif remote.is_empty():
 		_status("Offline, starting the installed version.")
 
+	# Restart the executable when it should run a downloaded pack and/or a
+	# different renderer than the one it started with.
+	var args := PackedStringArray()
 	if _newer(cached, running):
-		_status("Starting %s..." % _short(cached))
-		var args := PackedStringArray(["--main-pack", ProjectSettings.globalize_path(CACHED_PCK), "--", "--updated"])
+		args.append_array(["--main-pack", ProjectSettings.globalize_path(CACHED_PCK)])
+	args.append_array(renderer_args())
+	if not args.is_empty():
+		_status("Starting %s..." % _short(cached if _newer(cached, running) else running))
+		args.append_array(["--", "--updated"])
 		var pid := OS.create_process(OS.get_executable_path(), args)
 		if pid > 0:
 			get_tree().quit()
 			return
 		_status("Could not restart, starting the installed version.")
 	_start_game()
+
+
+# ---------------------------------------------------------------- renderer
+
+## The renderer the player chose ("forward_plus" or "gl_compatibility"), or
+## "" for the project default.
+static func preferred_renderer() -> String:
+	var cfg := ConfigFile.new()
+	cfg.load(SETTINGS)
+	return str(cfg.get_value("video", "renderer", ""))
+
+
+static func set_preferred_renderer(method: String) -> void:
+	var cfg := ConfigFile.new()
+	cfg.load(SETTINGS)
+	cfg.set_value("video", "renderer", method)
+	cfg.save(SETTINGS)
+
+
+## Command-line arguments that select the preferred renderer, if it differs
+## from the running one.
+static func renderer_args() -> PackedStringArray:
+	var want := preferred_renderer()
+	if want == "" or want == RenderingServer.get_current_rendering_method():
+		return PackedStringArray()
+	if want == "gl_compatibility":
+		return PackedStringArray(["--rendering-method", "gl_compatibility", "--rendering-driver", "opengl3"])
+	return PackedStringArray(["--rendering-method", want])
+
+
+## Switches between Forward+ and the lighter Compatibility renderer, then
+## restarts the game (which re-runs the update check too).
+static func toggle_renderer_and_restart(tree: SceneTree) -> void:
+	var now := RenderingServer.get_current_rendering_method()
+	set_preferred_renderer("forward_plus" if now == "gl_compatibility" else "gl_compatibility")
+	OS.set_restart_on_exit(true, PackedStringArray())
+	tree.quit()
 
 
 func _start_game() -> void:

@@ -3,9 +3,11 @@ extends Node3D
 ## player and the enemy. Aim at something and play with it.
 
 const MORPH_POINTS := 400000
-## Dots drawn per stored point on most objects (see PointCloud.density).
-const DETAIL := 4
-const GROUND_DETAIL := 2
+## Dots drawn per stored point (see PointCloud.density). 1 is fastest; the
+## surface discs already close up without extra dots.
+const DETAIL := 1
+const GROUND_SIZE := 50.0
+const GROUND_TILE := 5.0
 
 var player: PointPlayer
 var worm: PointWorm
@@ -14,6 +16,8 @@ var target: PointCloud          # cloud under the crosshair
 var target_body: CollisionObject3D
 var target_hit := Vector3.ZERO
 
+var quality: PointCloudQuality
+var _ground_tiles: Array[PointCloud] = []
 var _info: Label
 var _status: Label
 var _fire_cd := 0.0
@@ -37,8 +41,11 @@ func _ready() -> void:
 
 	for c in get_tree().get_nodes_in_group(&"point_clouds"):
 		var cloud := c as PointCloud
-		cloud.density = GROUND_DETAIL if cloud.get_parent().name == "Ground" else DETAIL
+		cloud.density = DETAIL
 		cloud.prepare_interaction()
+	quality = PointCloudQuality.new()
+	quality.name = "Quality"
+	add_child(quality)
 	_build_hud()
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 
@@ -74,7 +81,9 @@ func _setup_environment() -> void:
 	sun.light_color = Color(1.0, 0.92, 0.82)
 	sun.light_energy = 1.3
 	sun.shadow_enabled = true
-	sun.directional_shadow_max_distance = 60.0
+	# Two cascades over a shorter range: every cascade redraws all casters.
+	sun.directional_shadow_mode = DirectionalLight3D.SHADOW_PARALLEL_2_SPLITS
+	sun.directional_shadow_max_distance = 35.0
 	add_child(sun)
 
 
@@ -90,27 +99,46 @@ func _build_ground() -> void:
 	body.add_child(cs)
 	add_child(body)
 
-	var cloud := PointCloud.new()
-	cloud.data = PointSampler.plane(Vector2(size, size), 1500000, {
-		"fill": PointSampler.Fill.SHELL, "fill_fraction": 0.25, "thickness": 0.5,
-		"color_fn": func(p: Vector3, _n, _c, inside: bool) -> Color:
-			if inside:
-				return Color(0.35, 0.12, 0.05).lerp(Color(1.0, 0.5, 0.1), clampf(-p.y * 2.0, 0.0, 1.0))
-			return Color.WHITE,
-	})
-	# The grid comes from a texture sampled per pixel, so lines stay crisp.
-	cloud.surface_texture = _grid_texture()
-	cloud.texture_tile = Vector3(4, 4, 4)
-	cloud.texture_offset = Vector3(-1, 0, -1)
-	cloud.debris_gravity = Vector3(0, -8, 0)
-	cloud.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF  # nothing below it to shade
-	body.add_child(cloud)
-	body.set_meta("cloud", cloud)
+	# The ground is split into tiles: tiles outside the view are culled and
+	# distant ones draw fewer points (level of detail).
+	var grid_tex := _grid_texture()
+	var per_tile := int(1500000 * (GROUND_TILE * GROUND_TILE) / (size * size))
+	var tiles := int(size / GROUND_TILE)
+	for tz in tiles:
+		for tx in tiles:
+			var center := Vector3((tx + 0.5) * GROUND_TILE - size * 0.5, 0, (tz + 0.5) * GROUND_TILE - size * 0.5)
+			var cloud := PointCloud.new()
+			cloud.name = "Tile%d_%d" % [tx, tz]
+			cloud.position = center
+			cloud.data = PointSampler.plane(Vector2(GROUND_TILE, GROUND_TILE), per_tile, {
+				"fill": PointSampler.Fill.SHELL, "fill_fraction": 0.25, "thickness": 0.5,
+				"seed": tz * tiles + tx + 1,
+				"color_fn": func(p: Vector3, _n, _c, inside: bool) -> Color:
+					if inside:
+						return Color(0.35, 0.12, 0.05).lerp(Color(1.0, 0.5, 0.1), clampf(-p.y * 2.0, 0.0, 1.0))
+					return Color.WHITE,
+			})
+			# The grid comes from a texture sampled per pixel, so lines stay
+			# crisp; the offset keeps the pattern continuous across tiles.
+			cloud.surface_texture = grid_tex
+			cloud.texture_tile = Vector3(4, 4, 4)
+			cloud.texture_offset = Vector3(-1, 0, -1) - center
+			cloud.debris_gravity = Vector3(0, -8, 0)
+			cloud.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF  # nothing below it to shade
+			body.add_child(cloud)
+			_ground_tiles.append(cloud)
+	body.set_meta("cloud", _ground_tiles[0])
+	body.set_meta("cloud_at", func(pos: Vector3) -> PointCloud:
+		var i := clampi(int((pos.x + size * 0.5) / GROUND_TILE), 0, tiles - 1)
+		var j := clampi(int((pos.z + size * 0.5) / GROUND_TILE), 0, tiles - 1)
+		return _ground_tiles[j * tiles + i])
 
 
 func _build_props() -> void:
 	# The shape-shifter: a solid cube that morphs between several shapes.
-	# All targets have the same count and are pre-sorted, so morphs are free.
+	# All targets have the same count and are matched to each other in a
+	# chain up front, so morphs cost nothing at runtime. (match_order keeps the
+	# random point order that level of detail relies on.)
 	# Interior points get a hot glowing colour, revealed when you chip it.
 	var hot_core := func(_p, _n, c: Color, inside: bool) -> Color:
 		return Color(1.0, 0.85, 0.3) if inside else c
@@ -123,8 +151,8 @@ func _build_props() -> void:
 			"transform": Transform3D(Basis(Vector3.RIGHT, PI / 2), Vector3.ZERO)}),
 		PointSampler.text("POINTS", MORPH_POINTS, 96, 0.4, {"color": Color(0.3, 1.0, 0.6)}),
 	]
-	for i in shapes.size():
-		shapes[i] = PointSampler.sort_spatially(shapes[i])
+	for i in range(1, shapes.size()):
+		shapes[i] = PointSampler.match_order(shapes[i - 1], shapes[i])
 	var colliders: Array[Shape3D] = []
 	for s in shapes:
 		var b := BoxShape3D.new()
@@ -258,6 +286,14 @@ func _unhandled_input(event: InputEvent) -> void:
 			target.density = mini(target.density * 2, 16)
 		elif event.is_action_pressed("density_down"):
 			target.density = maxi(target.density / 2, 1)
+	if event.is_action_pressed("detail_down") or event.is_action_pressed("detail_up"):
+		quality.enabled = false
+		var f := 1.25 if event.is_action_pressed("detail_down") else 0.8
+		PointCloud.lod_spacing_px = clampf(PointCloud.lod_spacing_px * f, 1.0, 10.0)
+	elif event.is_action_pressed("detail_auto"):
+		quality.enabled = true
+	elif event.is_action_pressed("switch_renderer") and not OS.has_feature("editor"):
+		preload("res://launcher/launcher.gd").toggle_renderer_and_restart(get_tree())
 	if event.is_action_pressed("restore"):
 		for c in get_tree().get_nodes_in_group(&"point_clouds"):
 			(c as PointCloud).restore()
@@ -274,7 +310,11 @@ func _update_target() -> void:
 	if hit.is_empty():
 		return
 	var col: Object = hit["collider"]
-	if col.has_meta("cloud"):
+	if col.has_meta("cloud_at"):
+		target = col.get_meta("cloud_at").call(hit["position"])
+		target_body = col
+		target_hit = hit["position"]
+	elif col.has_meta("cloud"):
 		target = col.get_meta("cloud")
 		target_body = col
 		target_hit = hit["position"]
@@ -325,6 +365,8 @@ func _build_hud() -> void:
 		"  E morph · Q dissolve / reassemble · F explode",
 		"  V vibrate · G wobble · H heal holes",
 		"  [ / ] fewer / more dots per point",
+		"- / = less / more detail · 0 automatic (holds 60 fps)",
+		"F10 switch renderer (Compatibility is faster on weak GPUs)",
 		"R restore everything · Esc free mouse",
 	])
 	layer.add_child(_info)
@@ -357,8 +399,10 @@ func _build_hud() -> void:
 
 func _update_hud() -> void:
 	var total := 0
+	var drawn := 0
 	for c in get_tree().get_nodes_in_group(&"point_clouds"):
 		total += (c as PointCloud).get_dot_count()
+		drawn += (c as PointCloud).get_drawn_dot_count()
 	var aimed := "-"
 	if target:
 		aimed = target_body.name
@@ -366,7 +410,13 @@ func _update_hud() -> void:
 			aimed += " (hp %d)" % worm.hp
 	if target:
 		aimed += "\n%s dots (%d per point)" % [_group_digits(target.get_dot_count()), target.density]
-	_status.text = "%d FPS\n%s dots\ntarget: %s" % [Engine.get_frames_per_second(), _group_digits(total), aimed]
+	var renderer := RenderingServer.get_current_rendering_method()
+	var hint := ""
+	if quality.is_maxed_out() and renderer != "gl_compatibility":
+		hint = "\nstill slow: press F10 for the lighter renderer"
+	_status.text = "%d FPS · %s\n%s of %s dots drawn\n%s%s\ntarget: %s" % [Engine.get_frames_per_second(),
+		renderer.replace("gl_", "").replace("_", " "), _group_digits(drawn), _group_digits(total),
+		quality.describe(), hint, aimed]
 
 
 static func _read_version() -> Dictionary:
@@ -391,6 +441,8 @@ func _setup_input() -> void:
 		"jump": KEY_SPACE, "sprint": KEY_SHIFT, "morph": KEY_E, "dissolve": KEY_Q,
 		"explode": KEY_F, "vibrate": KEY_V, "wobble": KEY_G, "heal": KEY_H, "restore": KEY_R,
 		"density_down": KEY_BRACKETLEFT, "density_up": KEY_BRACKETRIGHT,
+		"detail_down": KEY_MINUS, "detail_up": KEY_EQUAL, "detail_auto": KEY_0,
+		"switch_renderer": KEY_F10,
 	}
 	for action in keys:
 		if not InputMap.has_action(action):
