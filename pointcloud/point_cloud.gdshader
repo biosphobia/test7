@@ -16,7 +16,7 @@ render_mode cull_disabled, depth_draw_opaque;
 uniform sampler2D pos_tex : filter_nearest, repeat_disable;   // xyz = rest position (RGB32F)
 uniform sampler2D col_tex : filter_nearest, repeat_disable;   // rgba = sRGB colour (RGBA32F)
 uniform sampler2D nrm_tex : filter_nearest, repeat_disable;   // xyz = normal (RGB32F)
-uniform sampler2D curv_tex : filter_nearest, repeat_disable;  // r = curvature, 1/radius (R32F)
+uniform sampler2D curv_tex : filter_nearest, repeat_disable;  // curvature tensor, 2 texels per point
 uniform sampler2D state_tex : filter_nearest, repeat_disable; // x = detach time (<0 attached), yzw = velocity
 uniform int tex_width = 2048;
 uniform int density = 1;            // dots drawn per stored point
@@ -44,6 +44,14 @@ uniform float roughness : hint_range(0.0, 1.0) = 0.75;
 uniform float metallic : hint_range(0.0, 1.0) = 0.0;
 uniform float emission_strength = 0.0;
 uniform vec4 tint = vec4(1.0);
+// Optional texture sampled per pixel (triplanar, from each disc's exact
+// surface position) and multiplied with the dot colours. Fine detail such as
+// lines, text or wood grain stays razor sharp however big the dots are.
+// Dot colour alpha masks it (interior points use alpha 0).
+uniform bool use_surface_texture = false;
+uniform sampler2D surface_texture : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
+uniform vec3 texture_tile = vec3(1.0);   // local size of one texture repeat per axis
+uniform vec3 texture_offset = vec3(0.0);
 uniform float tint_amount : hint_range(0.0, 1.0) = 0.0;
 
 // ---------------------------------------------------------------- skinning
@@ -103,7 +111,9 @@ varying float v_radius;  // disc radius, view space
 varying float v_sprite;  // half-size of the screen sprite, view space
 varying float v_flags;   // 1 = orthographic, 2 = clip to bounds
 varying float v_ysign;
-varying float v_curv;    // curvature in view-space units
+varying mat3 v_shape;    // curvature tensor S (local): dNormal = S * dPosition
+varying vec3 v_texpos;   // rest position, for the surface texture
+varying vec3 v_lnormal;  // rest normal, for triplanar blending
 
 // ---------------------------------------------------------------- helpers
 uint pcg_hash(uint v) {
@@ -140,6 +150,12 @@ void accum_bone(float bone, float w, vec3 p, vec3 n, inout vec3 sp, inout vec3 s
 	vec4 hp = vec4(p, 1.0);
 	sp += vec3(dot(r0, hp), dot(r1, hp), dot(r2, hp)) * w;
 	sn += vec3(dot(r0.xyz, n), dot(r1.xyz, n), dot(r2.xyz, n)) * w;
+}
+
+mat3 load_shape(sampler2D tex, ivec2 tc) {
+	vec4 a = texelFetch(tex, ivec2(tc.x * 2, tc.y), 0);
+	vec4 b = texelFetch(tex, ivec2(tc.x * 2 + 1, tc.y), 0);
+	return mat3(vec3(a.x, b.x, b.y), vec3(b.x, a.y, b.z), vec3(b.y, b.z, a.z));
 }
 
 // Spreads the dots of one stored point evenly (golden-angle spiral) over a
@@ -192,7 +208,7 @@ void vertex() {
 	}
 	vec3 rest = texelFetch(pos_tex, tc, 0).xyz + sub_offset(n, sub, spin);
 	vec4 c = texelFetch(col_tex, tc, 0);
-	float curv = texelFetch(curv_tex, tc, 0).r;
+	mat3 shape = load_shape(curv_tex, tc);
 	vec3 p = rest;
 	float size_scale = 1.0;
 	float glow = 0.0;
@@ -229,7 +245,8 @@ void vertex() {
 		p = mix(p, tp, t) + rand_dir(uid * 3u + 17u) * sin(t * PI) * morph_arc;
 		c = mix(c, tcol, t);
 		n = normalize(mix(n, tn, t) + vec3(1e-6));
-		curv = mix(curv, texelFetch(target_curv_tex, tc, 0).r, t);
+		mat3 tshape = load_shape(target_curv_tex, tc);
+		shape = mat3(mix(shape[0], tshape[0], t), mix(shape[1], tshape[1], t), mix(shape[2], tshape[2], t));
 	}
 
 	// --- vibrate: every point shivers around its own spot
@@ -339,7 +356,9 @@ void vertex() {
 	v_local = p;
 	v_flags = (ortho ? 1.0 : 0.0) + (clip_to_bounds && at_rest ? 2.0 : 0.0);
 	v_ysign = PROJECTION_MATRIX[1][1] < 0.0 ? -1.0 : 1.0;
-	v_curv = curv / max(obj_scale, 1e-6);
+	v_shape = shape;
+	v_texpos = rest;
+	v_lnormal = texelFetch(nrm_tex, tc, 0).xyz;
 	v_color = c;
 	v_glow = glow;
 }
@@ -352,13 +371,18 @@ void fragment() {
 	// Point on the sprite's plane (view space) that this pixel looks at.
 	vec3 q = v_center + vec3(pc.x * v_sprite, -pc.y * v_sprite * v_ysign, 0.0);
 	vec3 hit = q;
+	vec3 texpos = v_texpos;
 	bool ortho = mod(v_flags, 2.0) > 0.5;
+	mat3 mv = mat3(VIEW_MATRIX) * mat3(MODEL_MATRIX); // rotation * uniform scale
+	float mv_scale = length(mv[0]);
+	float grazing = 1.0;
 	if (splats) {
 		// Intersect this pixel's view ray with the dot's tangent-plane disc.
 		vec3 ro = ortho ? vec3(q.xy, 0.0) : vec3(0.0);
 		vec3 rd = ortho ? vec3(0.0, 0.0, -1.0) : normalize(q);
 		float denom = dot(rd, v_vnormal);
-		if (abs(denom) < 0.02) {
+		grazing = abs(denom);
+		if (grazing < 0.02) {
 			discard; // seen exactly edge-on: neighbouring discs cover this
 		}
 		hit = ro + rd * (dot(v_center - ro, v_vnormal) / denom);
@@ -366,13 +390,15 @@ void fragment() {
 		if (dot(off, off) > v_radius * v_radius) {
 			discard;
 		}
-		// Bend the normal across the disc by the surface curvature, so the
-		// shading of neighbouring discs meets seamlessly (like a smooth mesh).
-		NORMAL = normalize(v_vnormal + off * v_curv);
+		// This pixel's offset from the dot centre, in local space.
+		vec3 local_off = (transpose(mv) * off) / (mv_scale * mv_scale);
+		texpos += local_off;
+		// Bend the normal across the disc with the surface's curvature tensor,
+		// reproducing the source mesh's smoothly interpolated normals, so the
+		// shading of neighbouring discs meets seamlessly.
+		NORMAL = normalize(v_vnormal + mv * (v_shape * local_off) / mv_scale);
 		if (v_flags > 1.5) {
-			// Back to local space; MODEL/VIEW are rotation + uniform scale.
-			mat3 mv = mat3(VIEW_MATRIX) * mat3(MODEL_MATRIX);
-			vec3 lo = v_local + (transpose(mv) * off) / dot(mv[0], mv[0]);
+			vec3 lo = v_local + local_off;
 			vec3 eps = bounds_size * 0.0005 + vec3(1e-5);
 			if (any(lessThan(lo, bounds_min - eps)) || any(greaterThan(lo, bounds_min + bounds_size + eps))) {
 				discard;
@@ -396,6 +422,24 @@ void fragment() {
 #endif
 	LIGHT_VERTEX = hit; // per-pixel lighting and shadows across the disc
 	vec3 col = srgb_to_linear(v_color.rgb);
+	if (use_surface_texture && v_color.a > 0.0) {
+		vec3 bw = pow(abs(normalize(v_lnormal + vec3(1e-6))), vec3(8.0));
+		bw /= dot(bw, vec3(1.0));
+		vec3 uvw = (texpos - texture_offset) / texture_tile;
+		// Mip level from this pixel's exact footprint on the disc. GPU
+		// derivatives are unreliable inside tiny point sprites.
+		float wpp = 2.0 * v_sprite / max(v_px, 1.0) / mv_scale;
+		if (!ortho) {
+			wpp *= hit.z / v_center.z;
+		}
+		float footprint = wpp / sqrt(max(grazing, 0.05));
+		float tile = min(texture_tile.x, min(texture_tile.y, texture_tile.z));
+		float lod = log2(max(footprint / tile * float(textureSize(surface_texture, 0).x), 1e-6));
+		vec3 tex = textureLod(surface_texture, uvw.zy, lod).rgb * bw.x
+				+ textureLod(surface_texture, uvw.xz, lod).rgb * bw.y
+				+ textureLod(surface_texture, uvw.xy, lod).rgb * bw.z;
+		col *= mix(vec3(1.0), tex, v_color.a);
+	}
 	if (unshaded) {
 		ALBEDO = vec3(0.0);
 		EMISSION = col;

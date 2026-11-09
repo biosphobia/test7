@@ -21,8 +21,10 @@ extends Resource
 @export var positions := PackedVector3Array()
 @export var colors := PackedColorArray()
 @export var normals := PackedVector3Array()
-## Surface curvature (1 / radius) at each point, positive where convex. Used to
-## bend normals across each dot so lighting is smooth. Optional.
+## Surface curvature tensor per point, 8 floats each: xx, yy, zz, 0, xy, xz,
+## yz, 0 of the symmetric matrix S with dNormal = S * dPosition along the
+## surface (local space). The renderer uses it to bend normals across each
+## dot exactly like a mesh's interpolated normals. Optional.
 @export var curvatures := PackedFloat32Array()
 ## 4 skin bind indices per point (stored as floats). Empty when not skinned.
 @export var bone_indices := PackedFloat32Array()
@@ -79,7 +81,7 @@ func picked(indices: PackedInt32Array) -> PointCloudData:
 	var count := indices.size()
 	var has_n := normals.size() == size()
 	var has_c := colors.size() == size()
-	var has_k := curvatures.size() == size()
+	var has_k := curvatures.size() == size() * 8
 	var skinned := is_skinned()
 	out.positions.resize(count)
 	if has_n:
@@ -87,7 +89,7 @@ func picked(indices: PackedInt32Array) -> PointCloudData:
 	if has_c:
 		out.colors.resize(count)
 	if has_k:
-		out.curvatures.resize(count)
+		out.curvatures.resize(count * 8)
 	if skinned:
 		out.bone_indices.resize(count * 4)
 		out.bone_weights.resize(count * 4)
@@ -99,7 +101,8 @@ func picked(indices: PackedInt32Array) -> PointCloudData:
 		if has_c:
 			out.colors[i] = colors[j]
 		if has_k:
-			out.curvatures[i] = curvatures[j]
+			for k in 8:
+				out.curvatures[i * 8 + k] = curvatures[j * 8 + k]
 		if skinned:
 			for k in 4:
 				out.bone_indices[i * 4 + k] = bone_indices[j * 4 + k]
@@ -123,7 +126,7 @@ func merge(other: PointCloudData, xform := Transform3D.IDENTITY) -> void:
 	var rot := Transform3D(xform.basis.orthonormalized(), Vector3.ZERO)
 	normals.append_array(rot * o.normals)
 	colors.append_array(o.colors)
-	curvatures.append_array(o.curvatures if xform.basis.get_scale().x == 1.0 else _scaled(o.curvatures, 1.0 / xform.basis.get_scale().x))
+	curvatures.append_array(transformed_tensors(o.curvatures, xform.basis))
 	if both_skinned:
 		bone_indices.append_array(o.bone_indices)
 		bone_weights.append_array(o.bone_weights)
@@ -143,12 +146,27 @@ func _fill_defaults() -> void:
 	if colors.size() != n:
 		colors.resize(n)
 		colors.fill(Color.WHITE)
-	if curvatures.size() != n:
-		curvatures.resize(n)
+	if curvatures.size() != n * 8:
+		curvatures.resize(n * 8)
 
 
-static func _scaled(a: PackedFloat32Array, f: float) -> PackedFloat32Array:
+## Curvature tensors re-expressed after transforming points by `b`
+## (rotation + uniform scale): S' = R S R^T / scale.
+static func transformed_tensors(a: PackedFloat32Array, b: Basis) -> PackedFloat32Array:
+	var scale := b.get_scale().x
+	var r := b.orthonormalized()
+	if r.is_equal_approx(Basis.IDENTITY) and is_equal_approx(scale, 1.0):
+		return a
+	var rt := r.transposed()
 	var out := a.duplicate()
-	for i in out.size():
-		out[i] *= f
+	for i in range(0, out.size(), 8):
+		var s := Basis(Vector3(a[i], a[i + 4], a[i + 5]), Vector3(a[i + 4], a[i + 1], a[i + 6]),
+				Vector3(a[i + 5], a[i + 6], a[i + 2]))
+		var t := r * s * rt
+		out[i] = t.x.x / scale
+		out[i + 1] = t.y.y / scale
+		out[i + 2] = t.z.z / scale
+		out[i + 4] = t.y.x / scale
+		out[i + 5] = t.z.x / scale
+		out[i + 6] = t.z.y / scale
 	return out

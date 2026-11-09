@@ -96,15 +96,12 @@ func _build_ground() -> void:
 		"color_fn": func(p: Vector3, _n, _c, inside: bool) -> Color:
 			if inside:
 				return Color(0.35, 0.12, 0.05).lerp(Color(1.0, 0.5, 0.1), clampf(-p.y * 2.0, 0.0, 1.0))
-			var checker := (floori(p.x * 0.5) + floori(p.z * 0.5)) & 1
-			var base := Color(0.16, 0.17, 0.2) if checker == 0 else Color(0.12, 0.13, 0.16)
-			# Soft-edged grid lines: a gradient a few dots wide instead of a hard
-			# edge, so the line edges look smooth rather than ragged.
-			var gx := absf(fposmod(p.x + 1.0, 2.0) - 1.0)
-			var gz := absf(fposmod(p.z + 1.0, 2.0) - 1.0)
-			var line := smoothstep(0.9, 0.975, maxf(gx, gz))
-			return base.lerp(Color(0.2, 0.75, 0.9), line),
+			return Color.WHITE,
 	})
+	# The grid comes from a texture sampled per pixel, so lines stay crisp.
+	cloud.surface_texture = _grid_texture()
+	cloud.texture_tile = Vector3(4, 4, 4)
+	cloud.texture_offset = Vector3(-1, 0, -1)
 	cloud.debris_gravity = Vector3(0, -8, 0)
 	cloud.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF  # nothing below it to shade
 	body.add_child(cloud)
@@ -145,10 +142,14 @@ func _build_props() -> void:
 	crate_mesh.size = Vector3(1.6, 1.6, 1.6)
 	crate_mesh.material = crate_mat
 	var crate := PointSampler.from_mesh(crate_mesh, 250000, {"fill": PointSampler.Fill.SOLID, "fill_fraction": 0.35,
-		"color_fn": func(_p, _n, c: Color, inside: bool) -> Color: return Color(0.45, 0.28, 0.12) if inside else c})
+		"color_fn": func(_p, _n, _c, inside: bool) -> Color: return Color(0.45, 0.28, 0.12) if inside else Color.WHITE})
 	var cb := BoxShape3D.new()
 	cb.size = crate_mesh.size
-	_make_prop("Crate", crate, Vector3(-6, 0.8, -3), cb)
+	var crate_cloud := _make_prop("Crate", crate, Vector3(-6, 0.8, -3), cb).get_meta("cloud") as PointCloud
+	# One texture tile per face, sampled per pixel.
+	crate_cloud.surface_texture = crate_mat.albedo_texture
+	crate_cloud.texture_tile = crate_mesh.size
+	crate_cloud.texture_offset = -crate_mesh.size * 0.5
 
 	# Monoliths.
 	var cols := [Color(0.3, 0.55, 1.0), Color(0.9, 0.25, 0.4), Color(0.4, 0.95, 0.5)]
@@ -185,6 +186,23 @@ func _make_prop(prop_name: String, d: PointCloudData, pos: Vector3, shape: Shape
 	add_child(body)
 	props.append(body)
 	return body
+
+
+func _grid_texture() -> ImageTexture:
+	# One 4 m tile: a 2x2 checker of 2 m cells with glowing borders.
+	var n := 256
+	var img := Image.create(n, n, false, Image.FORMAT_RGBA8)
+	for y in n:
+		for x in n:
+			var u := float(x) / n * 2.0
+			var v := float(y) / n * 2.0
+			var checker := (int(u) + int(v)) & 1
+			var c := Color(0.16, 0.17, 0.2) if checker == 0 else Color(0.12, 0.13, 0.16)
+			var edge := minf(minf(fposmod(u, 1.0), 1.0 - fposmod(u, 1.0)), minf(fposmod(v, 1.0), 1.0 - fposmod(v, 1.0)))
+			c = c.lerp(Color(0.2, 0.75, 0.9), 1.0 - smoothstep(0.012, 0.022, edge))
+			img.set_pixel(x, y, c)
+	img.generate_mipmaps()
+	return ImageTexture.create_from_image(img)
 
 
 func _crate_image() -> Image:

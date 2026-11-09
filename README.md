@@ -14,6 +14,20 @@ text, changing colour on the way.
 | ![A solid cube made of 1.6 million dots](docs/solid_shapes.png) | ![Shooting the cube: dots chip off, glowing core shows](docs/demo.png) |
 | ![Dissolving cube](docs/dissolve.png) | Everything in these shots is dots, 10.8 million in the scene. Top left: an intact 1.6-million-dot cube. Top right: the same cube being shot, with dots flying off and its glowing interior showing. Bottom left: a dissolve. Record your own with `tests/demo_video.tscn` (see below). |
 
+## Download (Windows)
+
+Get **PointCloudWorld.exe** from the
+[latest release](https://github.com/biosphobia/test7/releases/tag/latest) and
+run it. You only download it once. Every push to this repository rebuilds the
+game on GitHub Actions, and the exe fetches the new content (a ~100 KB pack)
+the next time it starts. If you're offline, it starts the last version it
+downloaded. The build's commit is shown in the bottom-left corner.
+
+How it works: `launcher/launcher.gd` is the startup scene. It compares
+`version.json` on the release with the version it's running. If GitHub has a
+newer build, it downloads `game.pck` and restarts the exe on it with
+`--main-pack`. `.github/workflows/build.yml` produces those files.
+
 ## Running the demo
 
 Open the folder in **Godot 4.4 or newer** and press Play (`demo/main.tscn`).
@@ -56,10 +70,20 @@ point_cloud.gdshader           draws `density` dots per point; each dot finds it
   keeps a constant world size. Memory doesn't grow with the dot count. Dots are
   opaque and lit (or `unshaded`), write depth and cast shadows like normal
   geometry.
-* **Seamless surfaces.** The sampler spreads points evenly (stratified per
-  triangle plus an R2 low-discrepancy sequence) instead of randomly, and picks
-  a dot size that just closes the gaps. Interior points stay a few dot-widths
-  below the surface so they can't show through.
+* **Solid surfaces, not dots.** Each dot is drawn as a small disc lying in
+  the surface's tangent plane. The fragment shader intersects every pixel's
+  view ray with that disc and writes the exact depth, so overlapping discs
+  fuse into one continuous surface, like real geometry. Points are spread
+  evenly (stratified per triangle plus an R2 low-discrepancy sequence).
+* **Smooth shading.** Each point stores its surface's curvature tensor,
+  fitted from the source mesh's vertex normals. The shader bends the normal
+  across each disc with it, which reproduces the mesh's interpolated normals,
+  so lighting is continuous across dots.
+* **Sharp edges and detail.** Resting dots are trimmed at the cloud's bounding
+  box, so box edges are crisp. Fine colour detail can come from
+  `surface_texture`, sampled per pixel (triplanar, mip level from the exact
+  pixel footprint) and multiplied with the dot colours. The demo floor grid
+  and crate use it. Dot colour alpha masks it, so interior points stay plain.
 * **Density: more dots for free.** `PointCloud.density` draws N dots per stored
   point, spread over that point's patch of surface (a golden-angle spiral in
   the tangent plane). Every dot has its own seed, so effects and debris act on
@@ -104,6 +128,8 @@ cube.impact(hit_position)              # ripple through the surface
 cube.paint(hit_position, 0.5, Color.RED)
 cube.heal(1.5)
 cube.density = 8                       # 8 dots per stored point: finer, more seamless
+cube.surface_texture = load("res://wood.png")   # per-pixel detail on top of dot colours
+cube.texture_tile = Vector3(2, 2, 2)
 
 # Edit individual points from code
 var p := cube.data.positions

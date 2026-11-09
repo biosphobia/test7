@@ -86,6 +86,22 @@ static var _clock_frame := -1
 	set(v):
 		clip_to_bounds = v
 		_sp(&"clip_to_bounds", v)
+## Texture sampled per pixel (triplanar) and multiplied with the dot colours.
+## Use it for fine detail (lines, text, grain) that should stay sharp.
+@export var surface_texture: Texture2D:
+	set(v):
+		surface_texture = v
+		_sp(&"surface_texture", v)
+		_sp(&"use_surface_texture", v != null)
+## Local size of one texture repeat along x, y, z.
+@export var texture_tile := Vector3.ONE:
+	set(v):
+		texture_tile = v
+		_sp(&"texture_tile", v)
+@export var texture_offset := Vector3.ZERO:
+	set(v):
+		texture_offset = v
+		_sp(&"texture_offset", v)
 @export var round_points := true:
 	set(v):
 		round_points = v
@@ -286,7 +302,7 @@ func _init() -> void:
 			&"wobble_amplitude", &"wobble_frequency", &"wobble_speed", &"explode", &"explode_center",
 			&"dissolve", &"dissolve_direction", &"dissolve_directional", &"dissolve_spread",
 			&"dissolve_drift", &"dissolve_edge_color", &"glow_strength", &"morph", &"morph_stagger",
-			&"morph_arc", &"debris_lifetime", &"debris_gravity", &"density", &"splats", &"clip_to_bounds"]:
+			&"morph_arc", &"debris_lifetime", &"debris_gravity", &"density", &"splats", &"clip_to_bounds", &"texture_tile", &"texture_offset"]:
 		_sp(p, get(p))
 
 
@@ -547,7 +563,7 @@ func set_morph_target(t: PointCloudData) -> void:
 	_tpos_tex = _upload(_tpos_tex, _padded_v3(t.positions, total).to_byte_array(), Image.FORMAT_RGBF)
 	_tcol_tex = _upload_colors(_tcol_tex, t.colors)
 	_tnrm_tex = _upload(_tnrm_tex, _padded_v3(t.normals, total).to_byte_array(), Image.FORMAT_RGBF)
-	_tcurv_tex = _upload(_tcurv_tex, _padded_f(t.curvatures, total).to_byte_array(), Image.FORMAT_RF)
+	_tcurv_tex = _upload_tensors(_tcurv_tex, t.curvatures)
 	_sp(&"target_curv_tex", _tcurv_tex)
 	_sp(&"target_pos_tex", _tpos_tex)
 	_sp(&"target_col_tex", _tcol_tex)
@@ -649,7 +665,7 @@ func _rebuild(keep_state: bool) -> void:
 	_pos_tex = _upload(_pos_tex, _padded_v3(data.positions, total).to_byte_array(), Image.FORMAT_RGBF)
 	_col_tex = _upload_colors(_col_tex, data.colors)
 	_nrm_tex = _upload(_nrm_tex, _padded_v3(data.normals, total).to_byte_array(), Image.FORMAT_RGBF)
-	_curv_tex = _upload(_curv_tex, _padded_f(data.curvatures, total).to_byte_array(), Image.FORMAT_RF)
+	_curv_tex = _upload_tensors(_curv_tex, data.curvatures)
 	_sp(&"curv_tex", _curv_tex)
 	_sp(&"pos_tex", _pos_tex)
 	_sp(&"col_tex", _col_tex)
@@ -752,10 +768,16 @@ func _sp(param: StringName, value: Variant) -> void:
 		_mat.set_shader_parameter(param, value)
 
 
-static func _padded_f(arr: PackedFloat32Array, total: int) -> PackedFloat32Array:
+## Curvature tensors: 8 floats = two RGBA texels per point, side by side in
+## a texture twice as wide as the others.
+func _upload_tensors(tex: ImageTexture, arr: PackedFloat32Array) -> ImageTexture:
 	var a := arr.duplicate()
-	a.resize(total)
-	return a
+	a.resize(TEX_WIDTH * _tex_h * 8)
+	var img := Image.create_from_data(TEX_WIDTH * 2, _tex_h, false, Image.FORMAT_RGBAF, a.to_byte_array())
+	if tex and tex.get_width() == TEX_WIDTH * 2 and tex.get_height() == _tex_h:
+		tex.update(img)
+		return tex
+	return ImageTexture.create_from_image(img)
 
 
 static func _padded_v3(arr: PackedVector3Array, total: int) -> PackedVector3Array:

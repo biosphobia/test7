@@ -192,25 +192,64 @@ static func from_mesh(mesh: Mesh, count: int, opts: Dictionary = {}) -> PointClo
 	out.positions.resize(count)
 	out.normals.resize(count)
 	out.colors.resize(count)
-	out.curvatures.resize(count)
+	out.curvatures.resize(count * 8)
 	if any_bones:
 		out.bone_indices.resize(count * 4)
 		out.bone_weights.resize(count * 4)
 
-	# Curvature per triangle from how its vertex normals turn along its edges
-	# (0 for flat faces, 1/r on a sphere of radius r).
-	var tri_k := PackedFloat32Array()
-	tri_k.resize(tri_count)
+	# Curvature tensor per triangle: the symmetric S that best explains how
+	# the vertex normals change along the edges (dN = S dP), fitted by least
+	# squares in the triangle's plane. 0 for flat faces, I/r on a sphere.
+	var tri_s := PackedFloat32Array()
+	tri_s.resize(tri_count * 8)
 	for t in tri_count:
-		var k := 0.0
+		var a0 := tri[t * 3]
+		var fnorm := (V[a0] - V[tri[t * 3 + 2]]).cross(V[a0] - V[tri[t * 3 + 1]])
+		if fnorm.length_squared() < 1e-20:
+			continue
+		fnorm = fnorm.normalized()
+		var tx := (V[tri[t * 3 + 1]] - V[a0]).normalized()
+		var ty := fnorm.cross(tx)
+		var ee := Vector3.ZERO  # sum of e e^T: xx, xy, yy
+		var de := [0.0, 0.0, 0.0, 0.0]  # sum of d e^T: 00, 01, 10, 11
+		var ok := true
 		for e in 3:
-			var a := tri[t * 3 + e]
-			var b := tri[t * 3 + (e + 1) % 3]
-			var dp := V[a] - V[b]
-			var l2 := dp.length_squared()
-			if l2 > 1e-12 and N[a].length_squared() > 0.5 and N[b].length_squared() > 0.5:
-				k += (N[a] - N[b]).dot(dp) / l2
-		tri_k[t] = k / 3.0
+			var ia := tri[t * 3 + e]
+			var ib := tri[t * 3 + (e + 1) % 3]
+			if N[ia].length_squared() < 0.5 or N[ib].length_squared() < 0.5:
+				ok = false
+				break
+			var dp := V[ia] - V[ib]
+			var dn := N[ia] - N[ib]
+			var ex := dp.dot(tx)
+			var ey := dp.dot(ty)
+			var dx := dn.dot(tx)
+			var dy := dn.dot(ty)
+			ee += Vector3(ex * ex, ex * ey, ey * ey)
+			de[0] += dx * ex
+			de[1] += dx * ey
+			de[2] += dy * ex
+			de[3] += dy * ey
+		var det := ee.x * ee.z - ee.y * ee.y
+		if not ok or absf(det) < 1e-20:
+			continue
+		# A = DE * EE^-1, then symmetrised.
+		var i00 := ee.z / det
+		var i01 := -ee.y / det
+		var i11 := ee.x / det
+		var a00: float = de[0] * i00 + de[1] * i01
+		var a01: float = de[0] * i01 + de[1] * i11
+		var a10: float = de[2] * i00 + de[3] * i01
+		var a11: float = de[2] * i01 + de[3] * i11
+		var sym := (a01 + a10) * 0.5
+		# S = A00 tx tx^T + sym (tx ty^T + ty tx^T) + A11 ty ty^T
+		var k := t * 8
+		tri_s[k] = a00 * tx.x * tx.x + 2.0 * sym * tx.x * ty.x + a11 * ty.x * ty.x
+		tri_s[k + 1] = a00 * tx.y * tx.y + 2.0 * sym * tx.y * ty.y + a11 * ty.y * ty.y
+		tri_s[k + 2] = a00 * tx.z * tx.z + 2.0 * sym * tx.z * ty.z + a11 * ty.z * ty.z
+		tri_s[k + 4] = a00 * tx.x * tx.y + sym * (tx.x * ty.y + ty.x * tx.y) + a11 * ty.x * ty.y
+		tri_s[k + 5] = a00 * tx.x * tx.z + sym * (tx.x * ty.z + ty.x * tx.z) + a11 * ty.x * ty.z
+		tri_s[k + 6] = a00 * tx.y * tx.z + sym * (tx.y * ty.z + ty.y * tx.z) + a11 * ty.y * ty.z
 
 	var slot := PackedInt32Array()
 	slot.resize(count)
@@ -280,11 +319,15 @@ static func from_mesh(mesh: Mesh, count: int, opts: Dictionary = {}) -> PointClo
 				p -= n * lerpf(minf(skin_gap, thickness), thickness, rng.randf())
 		if use_fn:
 			col = color_fn.call(p, n, col, inside)
+		# Alpha masks PointCloud.surface_texture: off for interior points.
+		col.a = 0.0 if inside else 1.0
 
 		out.positions[o] = p
 		out.normals[o] = n
 		out.colors[o] = col
-		out.curvatures[o] = 0.0 if inside else tri_k[t]
+		if not inside:
+			for c in 8:
+				out.curvatures[o * 8 + c] = tri_s[t * 8 + c]
 		if any_bones:
 			var dom := i0
 			if u >= w and u >= v:
@@ -302,7 +345,7 @@ static func from_mesh(mesh: Mesh, count: int, opts: Dictionary = {}) -> PointClo
 		out.positions = xf * out.positions
 		out.normals = Transform3D(xf.basis.orthonormalized(), Vector3.ZERO) * out.normals
 		out.suggested_point_size *= xf.basis.get_scale().x
-		out.curvatures = PointCloudData._scaled(out.curvatures, 1.0 / xf.basis.get_scale().x)
+		out.curvatures = PointCloudData.transformed_tensors(out.curvatures, xf.basis)
 	out.recompute_aabb()
 	return out
 
@@ -350,7 +393,11 @@ static func sphere(radius: float, count: int, opts: Dictionary = {}) -> PointClo
 		if l > radius * 0.97:
 			p[i] = p[i] / l * radius
 			nrm[i] = p[i] / radius
-			curv[i] = 1.0 / radius
+			curv[i * 8] = 1.0 / radius
+			curv[i * 8 + 1] = 1.0 / radius
+			curv[i * 8 + 2] = 1.0 / radius
+			for c in [4, 5, 6]:
+				curv[i * 8 + c] = 0.0
 	data.positions = p
 	data.normals = nrm
 	data.curvatures = curv
