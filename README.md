@@ -11,8 +11,8 @@ text, changing colour on the way.
 
 | | |
 |---|---|
-| ![Demo: player, carved cube with glowing core, skinned worm](docs/demo.png) | ![Dissolving cube](docs/dissolve.png) |
-| ![300k / 200k / 150k points that read as solid meshes](docs/solid_shapes.png) | Everything in these shots is points. Top left: the cube has been shot (its glowing interior shows through), and the worm is a skinned, animated mesh. Top right: a dissolve. Bottom: three point clouds that look like ordinary meshes. |
+| ![A solid cube made of 1.6 million dots](docs/solid_shapes.png) | ![Shooting the cube: dots chip off, glowing core shows](docs/demo.png) |
+| ![Dissolving cube](docs/dissolve.png) | Everything in these shots is dots, 10.8 million in the scene. Top left: an intact 1.6-million-dot cube. Top right: the same cube being shot, with dots flying off and its glowing interior showing. Bottom left: a dissolve. Record your own with `tests/demo_video.tscn` (see below). |
 
 ## Running the demo
 
