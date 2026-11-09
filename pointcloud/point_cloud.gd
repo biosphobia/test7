@@ -102,6 +102,14 @@ static var _clock_frame := -1
 	set(v):
 		max_pixel_size = v
 		_sp(&"max_pixel_size", v)
+## Draw every dot as a small lit bead (default). Resting beads overlap to
+## close the surface; flying beads shrink. Size and shading change smoothly
+## with how far a dot is "in flight", so morphs and debris never pop.
+## Off = flat surface discs (see `splats`) while resting.
+@export var beads := true:
+	set(v):
+		beads = v
+		_sp(&"beads", v)
 ## Draw each dot as a disc lying on the surface with exact per-pixel depth,
 ## so dots fuse into a continuous, solid-looking surface.
 @export var splats := true:
@@ -372,7 +380,7 @@ func _init() -> void:
 			&"wobble_amplitude", &"wobble_frequency", &"wobble_speed", &"explode", &"explode_center",
 			&"dissolve", &"dissolve_direction", &"dissolve_directional", &"dissolve_spread",
 			&"dissolve_drift", &"dissolve_edge_color", &"glow_strength", &"morph", &"morph_stagger",
-			&"morph_arc", &"debris_lifetime", &"debris_gravity", &"density", &"splats", &"clip_to_bounds", &"texture_tile", &"texture_offset"]:
+			&"morph_arc", &"debris_lifetime", &"debris_gravity", &"density", &"beads", &"splats", &"clip_to_bounds", &"texture_tile", &"texture_offset"]:
 		_sp(p, get(p))
 
 
@@ -867,8 +875,7 @@ func _bind_current() -> void:
 		_bind_target(_cur)
 	_sp(&"use_skin", data.is_skinned() and _skin_in_use != null)
 	_sp(&"point_spacing", data.suggested_point_size / PointSampler.SIZE_FACTOR)
-	_sp(&"interior_scale", data.interior_point_size / data.suggested_point_size
-			if data.interior_point_size > 0.0 and data.suggested_point_size > 0.0 else 1.0)
+	_sp(&"interior_scale", _interior_scale_for(data))
 	_sp(&"bounds_min", data.aabb.position)
 	_sp(&"bounds_size", data.aabb.size)
 	_update_point_size()
@@ -880,6 +887,10 @@ func _bind_current() -> void:
 
 
 func _bind_target(sh: _ShapeTex) -> void:
+	# Dots blend to the target's dot size as they travel, so nothing changes
+	# size when the morph completes and the target becomes the shape.
+	_sp(&"target_point_size", _point_size_for(sh.data))
+	_sp(&"target_interior_scale", _interior_scale_for(sh.data))
 	_sp(&"target_pos_tex", sh.pos)
 	_sp(&"target_col_tex", sh.col)
 	_sp(&"target_nrm_tex", sh.nrm)
@@ -1193,12 +1204,22 @@ func _set_custom_aabb(box: AABB) -> void:
 
 
 func _update_point_size() -> void:
+	_sp(&"point_size", _point_size_for(data))
+
+
+static func _interior_scale_for(d: PointCloudData) -> float:
+	if d and d.interior_point_size > 0.0 and d.suggested_point_size > 0.0:
+		return d.interior_point_size / d.suggested_point_size
+	return 1.0
+
+
+func _point_size_for(d: PointCloudData) -> float:
 	var s := point_size
 	if s <= 0.0:
-		s = data.suggested_point_size if data else 0.02
+		s = d.suggested_point_size if d else 0.02
 	# Sub-dots share the stored point's area, so each one is smaller.
 	var dot := s / sqrt(float(density)) * (1.0 if density == 1 else 1.3)
-	_sp(&"point_size", dot * point_size_multiplier)
+	return dot * point_size_multiplier
 
 
 func _reset_state() -> void:

@@ -95,6 +95,7 @@ func _setup_environment() -> void:
 	post_mat.shader = preload("res://demo/blend_post.gdshader")
 	blend_post.material = post_mat
 	post.add_child(blend_post)
+	blend_post.visible = false  # off by default: it would soften the beads
 
 	var sun := DirectionalLight3D.new()
 	sun.rotation_degrees = Vector3(-48, -35, 0)

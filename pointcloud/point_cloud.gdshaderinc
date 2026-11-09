@@ -28,6 +28,8 @@ uniform vec3 bounds_size = vec3(2.0);
 
 // ---------------------------------------------------------------- appearance
 uniform float point_size = 0.02;          // world-space diameter of one point
+uniform float target_point_size = 0.02;   // the morph target's, blended per dot
+uniform float target_interior_scale = 1.0;
 uniform float lod_scale = 1.0;            // > 1 when level of detail draws fewer points
 uniform float interior_scale = 1.0;       // interior dot size relative to surface dots
 uniform float min_pixel_size = 1.0;
@@ -116,6 +118,19 @@ uniform float shadow_push = 0.75;
 // round beads with their own sphere-like shading instead of flat surface
 // discs. Size relative to a surface dot.
 uniform float bead_size = 0.55;
+// Draw every dot as a bead (default). Resting beads are sized to overlap and
+// close the surface; in flight they shrink to bead_size. Size and shading
+// follow the same continuous "in flight" amount, so morphs, debris and
+// dissolves flow from surface to beads and back without anything popping.
+// Off = flat surface discs (splats) while resting.
+uniform bool beads = true;
+// Resting bead diameter relative to point_size (must close the surface).
+uniform float bead_cover = 1.55;
+// How much each resting bead's own roundness shows in its shading (0 = flat
+// like the surface, 1 = full sphere). Beads in flight are always full spheres.
+uniform float bead_bulge : hint_range(0.0, 1.0) = 0.55;
+// Darkening towards each bead's rim; defines the individual beads.
+uniform float bead_edge_shade : hint_range(0.0, 1.0) = 0.3;
 
 // Ripple impacts: xyz = local position, w = start time (< 0 inactive).
 uniform vec4 impact_pos[8];
@@ -137,7 +152,8 @@ varying float v_ysign;
 varying mat3 v_shape;    // curvature tensor S (local): dNormal = S * dPosition
 varying vec3 v_texpos;   // rest position, for the surface texture
 varying vec3 v_lnormal;  // rest normal, for triplanar blending
-varying float v_bead;    // 1 = draw as a round bead (dot in flight)
+varying float v_bead;    // 1 = draw as a round bead
+varying float v_fly;     // 0 = resting on the surface .. 1 = in flight
 varying float v_shadow;  // 1 = drawing into a directional shadow map
 
 // ---------------------------------------------------------------- helpers
@@ -236,7 +252,7 @@ void vertex() {
 	vec3 base = texelFetch(pos_tex, tc, 0).xyz;
 	vec3 rest = base + sub_offset(n, sub, spin);
 	vec4 c = texelFetch(col_tex, tc, 0);
-	mat3 shape = load_shape(curv_tex, tc);
+	mat3 shape = beads ? mat3(0.0) : load_shape(curv_tex, tc); // beads don't need curvature
 	vec3 p = rest;
 	float size_scale = 1.0;
 	float glow = 0.0;
@@ -297,9 +313,11 @@ void vertex() {
 	}
 
 	// --- morph into the target cloud, each point on its own schedule and arc
+	float morph_t = 0.0; // this dot's progress towards the morph target
 	if (morph > 0.0) {
 		float t = clamp((morph - seed * morph_stagger) / (1.0 - morph_stagger), 0.0, 1.0);
 		t = t * t * (3.0 - 2.0 * t);
+		morph_t = t;
 		vec3 tn = texelFetch(target_nrm_tex, tc, 0).xyz;
 		if (dot(tn, tn) < 0.01) {
 			tn = vec3(0.0, 1.0, 0.0);
@@ -310,8 +328,10 @@ void vertex() {
 		fly = max(fly, sin(t * PI));
 		c = mix(c, tcol, t);
 		n = normalize(mix(n, tn, t) + vec3(1e-6));
-		mat3 tshape = load_shape(target_curv_tex, tc);
-		shape = mat3(mix(shape[0], tshape[0], t), mix(shape[1], tshape[1], t), mix(shape[2], tshape[2], t));
+		if (!beads) {
+			mat3 tshape = load_shape(target_curv_tex, tc);
+			shape = mat3(mix(shape[0], tshape[0], t), mix(shape[1], tshape[1], t), mix(shape[2], tshape[2], t));
+		}
 	}
 
 	// --- vibrate: every point shivers around its own spot
@@ -416,9 +436,11 @@ void vertex() {
 		}
 	}
 	float obj_scale = length(MODELVIEW_MATRIX[0].xyz);
-	float disc_size = point_size * lod_scale * (splats ? splat_scale : 1.0) * (on_surface ? 1.0 : interior_scale);
+	float ps = mix(point_size, target_point_size, morph_t);
+	float disc_size = ps * lod_scale * (beads ? bead_cover : (splats ? splat_scale : 1.0))
+			* (on_surface ? 1.0 : mix(interior_scale, target_interior_scale, morph_t));
 	// Beads in flight are smaller and don't grow much with level of detail.
-	float bead_world = point_size * min(lod_scale, 1.6) * bead_size;
+	float bead_world = ps * min(lod_scale, 1.6) * bead_size;
 	float world_size = mix(disc_size, bead_world, fly) * obj_scale * size_scale;
 	bool shadow_pass = PROJECTION_MATRIX[3][3] > 0.5; // orthographic = directional shadow map
 	if (shadow_pass) {
@@ -428,7 +450,7 @@ void vertex() {
 				/ max(obj_scale * obj_scale, 1e-8);
 		vp = MODELVIEW_MATRIX * vec4(VERTEX, 1.0);
 	}
-	bool bead = fly > 0.5;
+	bool bead = beads || fly > 0.5;
 	// A tilted disc can poke slightly past a sprite of its own diameter, so
 	// splat sprites are drawn a bit bigger than the disc.
 	float sprite_size = world_size * (splats && !bead ? 1.2 : 1.0);
@@ -451,6 +473,7 @@ void vertex() {
 	v_local = p;
 	v_flags = (ortho ? 1.0 : 0.0) + (clip_to_bounds && at_rest && fly == 0.0 ? 2.0 : 0.0);
 	v_bead = bead ? 1.0 : 0.0;
+	v_fly = fly;
 	v_shadow = shadow_pass ? 1.0 : 0.0;
 	v_ysign = PROJECTION_MATRIX[1][1] < 0.0 ? -1.0 : 1.0;
 	v_shape = shape;
@@ -473,18 +496,37 @@ void fragment() {
 	mat3 mv = mat3(VIEW_MATRIX) * mat3(MODEL_MATRIX); // rotation * uniform scale
 	float mv_scale = length(mv[0]);
 	float grazing = 1.0;
+	float bead_shade = 1.0;
 	if (v_shadow > 0.5) {
 		// Shadow map: plain square, flat depth (see shadow_disc_scale).
 	} else if (v_bead > 0.5) {
-		// A tiny lit sphere: round, with a hemisphere normal, so flying dots
-		// look like beads of material rather than flat flakes.
+		// A bead: round, shaded like a little sphere. Resting beads blend that
+		// with the surface normal so the object keeps its shape and lighting;
+		// beads in flight are full spheres. The blend follows v_fly, so the
+		// look changes continuously.
 		float r2 = dot(pc, pc);
 		if (r2 > 1.0) {
 			discard;
 		}
 		vec3 bn = vec3(pc.x, -pc.y * v_ysign, sqrt(1.0 - r2));
-		NORMAL = normalize(bn);
+		// Beads only a few pixels wide can't show their roundness; their rims
+		// would just beat against the pixel grid (moire). Fade the bead
+		// shading in with on-screen size.
+		float detail = smoothstep(4.0, 11.0, v_px);
+		NORMAL = normalize(mix(v_vnormal, bn, mix(bead_bulge, 1.0, v_fly) * detail));
 		hit = v_center + bn * v_radius;
+		bead_shade = mix(1.0, mix(1.0 - bead_edge_shade, 1.0, bn.z), detail);
+		// Offset across the bead (in its screen-facing plane), in local space,
+		// for surface textures and box-edge trimming.
+		vec3 local_off = (transpose(mv) * (vec3(pc.x, -pc.y * v_ysign, 0.0) * v_radius)) / (mv_scale * mv_scale);
+		texpos += local_off;
+		if (v_flags > 1.5) {
+			vec3 lo = v_local + local_off;
+			vec3 eps = bounds_size * 0.0005 + vec3(1e-5);
+			if (any(lessThan(lo, bounds_min - eps)) || any(greaterThan(lo, bounds_min + bounds_size + eps))) {
+				discard;
+			}
+		}
 	} else if (splats) {
 		// Intersect this pixel's view ray with the dot's tangent-plane disc.
 		vec3 ro = ortho ? vec3(q.xy, 0.0) : vec3(0.0);
@@ -561,6 +603,7 @@ void fragment() {
 		}
 		col *= mix(vec3(1.0), tex, v_color.a);
 	}
+	col *= bead_shade;
 	if (unshaded) {
 		ALBEDO = vec3(0.0);
 		EMISSION = col;
