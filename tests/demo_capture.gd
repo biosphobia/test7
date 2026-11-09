@@ -50,6 +50,11 @@ func _process(_d: float) -> void:
 				cube.carve(cube.to_global(Vector3(randf_range(-0.6, 0.6), 1.0, randf_range(-0.6, 0.6))), 0.35, 1.5)
 			cube.carve(cube.to_global(Vector3(0.3, 0.2, 1.0)), 0.5, 1.5)
 			cube.carve(cube.to_global(Vector3(-0.5, -0.3, 1.0)), 0.3, 1.5)
+			# Shoot the floor too (tests flat-proxy holes).
+			var ground: StaticBody3D = main.get_node("Ground")
+			for gp in [Vector3(-1.2, 0, 3.0), Vector3(1.0, 0, 2.2), Vector3(0.2, 0, 4.0)]:
+				var tile: PointCloud = ground.get_meta("cloud_at").call(gp)
+				tile.carve(gp, 0.45, 2.0)
 		6:
 			_shot("02_carved")
 		7:

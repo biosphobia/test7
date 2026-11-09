@@ -34,6 +34,9 @@ extends Resource
 @export var aabb := AABB()
 ## Point diameter that makes the surface look closed at this density.
 @export var suggested_point_size := 0.02
+## Dot diameter for interior points, which are spread through a volume and
+## usually sparser than the surface. 0 = same as suggested_point_size.
+@export var interior_point_size := 0.0
 ## Points are stored as [surface points | interior points], each part in
 ## progressive order (every prefix is evenly spread). This is how many
 ## surface points come first; -1 = all points are surface. The renderer skips interior points until something exposes

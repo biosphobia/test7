@@ -17,6 +17,7 @@ var target_body: CollisionObject3D
 var target_hit := Vector3.ZERO
 
 var quality: PointCloudQuality
+var blend_post: ColorRect
 var _ground_tiles: Array[PointCloud] = []
 var _info: Label
 var _status: Label
@@ -41,8 +42,15 @@ func _ready() -> void:
 
 	for c in get_tree().get_nodes_in_group(&"point_clouds"):
 		var cloud := c as PointCloud
-		cloud.density = DETAIL
+		# Floor tiles: finer dots for hole walls and effects. With the flat proxy
+		# they're only drawn around holes, so it costs almost nothing.
+		cloud.density = 4 if cloud.flat_proxy else DETAIL
 		cloud.prepare_interaction()
+	# Warm the morph cache in the background so E reacts instantly.
+	for p in props:
+		if not p.has_meta("shapes"):
+			var cloud: PointCloud = p.get_meta("cloud")
+			cloud.prepare_morph_target(_sphere_target(cloud))
 	quality = PointCloudQuality.new()
 	quality.name = "Quality"
 	add_child(quality)
@@ -75,6 +83,18 @@ func _setup_environment() -> void:
 	var we := WorldEnvironment.new()
 	we.environment = env
 	add_child(we)
+
+	# Light edge-aware smoothing over the 3D image (F9 toggles it).
+	var post := CanvasLayer.new()
+	post.layer = 0  # above the 3D view, below the HUD (layer 1)
+	add_child(post)
+	blend_post = ColorRect.new()
+	blend_post.set_anchors_preset(Control.PRESET_FULL_RECT)
+	blend_post.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var post_mat := ShaderMaterial.new()
+	post_mat.shader = preload("res://demo/blend_post.gdshader")
+	blend_post.material = post_mat
+	post.add_child(blend_post)
 
 	var sun := DirectionalLight3D.new()
 	sun.rotation_degrees = Vector3(-48, -35, 0)
@@ -111,11 +131,11 @@ func _build_ground() -> void:
 			cloud.name = "Tile%d_%d" % [tx, tz]
 			cloud.position = center
 			cloud.data = PointSampler.plane(Vector2(GROUND_TILE, GROUND_TILE), per_tile, {
-				"fill": PointSampler.Fill.SHELL, "fill_fraction": 0.25, "thickness": 0.5,
+				"fill": PointSampler.Fill.SHELL, "fill_fraction": 0.3, "thickness": 0.25,
 				"seed": tz * tiles + tx + 1,
 				"color_fn": func(p: Vector3, _n, _c, inside: bool) -> Color:
 					if inside:
-						return Color(0.35, 0.12, 0.05).lerp(Color(1.0, 0.5, 0.1), clampf(-p.y * 2.0, 0.0, 1.0))
+						return Color(0.35, 0.12, 0.05).lerp(Color(1.0, 0.5, 0.1), clampf(-p.y * 4.0, 0.0, 1.0))
 					return Color.WHITE,
 			})
 			# The grid comes from a texture sampled per pixel, so lines stay
@@ -125,6 +145,9 @@ func _build_ground() -> void:
 			cloud.texture_offset = Vector3(-1, 0, -1) - center
 			cloud.debris_gravity = Vector3(0, -8, 0)
 			cloud.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF  # nothing below it to shade
+			# While intact, draw each tile as one textured plane; dots only for
+			# holes, debris and effects.
+			cloud.flat_proxy = true
 			body.add_child(cloud)
 			_ground_tiles.append(cloud)
 	body.set_meta("cloud", _ground_tiles[0])
@@ -159,6 +182,11 @@ func _build_props() -> void:
 		b.size = s.aabb.size.max(Vector3.ONE * 0.3)
 		colliders.append(b)
 	var morpher := _make_prop("Shape-shifter", shapes[0], Vector3(0, 1.6, 0), colliders[0])
+	# Upload the other shapes to the GPU in the background, so every morph
+	# starts instantly.
+	var morph_cloud: PointCloud = morpher.get_meta("cloud")
+	for i in range(1, shapes.size()):
+		morph_cloud.prepare_morph_target(shapes[i], false)
 	morpher.set_meta("shapes", shapes)
 	morpher.set_meta("colliders", colliders)
 	morpher.set_meta("shape_index", 0)
@@ -292,6 +320,8 @@ func _unhandled_input(event: InputEvent) -> void:
 		PointCloud.lod_spacing_px = clampf(PointCloud.lod_spacing_px * f, 1.0, 10.0)
 	elif event.is_action_pressed("detail_auto"):
 		quality.enabled = true
+	elif event.is_action_pressed("toggle_blend"):
+		blend_post.visible = not blend_post.visible
 	elif event.is_action_pressed("switch_renderer") and not OS.has_feature("editor"):
 		preload("res://launcher/launcher.gd").toggle_renderer_and_restart(get_tree())
 	if event.is_action_pressed("restore"):
@@ -329,15 +359,28 @@ func shoot() -> void:
 		target_body.get_meta("on_hit").call(target_hit)
 
 
+## The "turn into a sphere" target of a cloud: a Callable, so it is generated
+## on a worker thread. The same Callable is reused as the cache key, so once
+## prepared (see _ready) the morph starts instantly.
+func _sphere_target(cloud: PointCloud) -> Callable:
+	if not cloud.has_meta("sphere_gen"):
+		var r := cloud.data.aabb.get_longest_axis_size() * 0.5
+		var count := cloud.data.size()
+		# Mesh access must happen on the main thread; the sampling itself
+		# (the slow part) then runs on a worker.
+		var snap := PointSampler.snapshot(PointSampler.sphere_mesh(r))
+		cloud.set_meta("sphere_gen", func() -> PointCloudData:
+			return PointSampler.sphere_from_snapshot(snap, r, count, {"color": Color(0.9, 0.9, 1.0)}))
+	return cloud.get_meta("sphere_gen")
+
+
 func morph_target() -> void:
 	var body := target_body
 	if not body.has_meta("shapes"):
 		# Anything else morphs into a sphere and back to its own shape.
-		var own: PointCloudData = target.data
 		if not target.has_meta("home"):
-			target.set_meta("home", own)
-			var r := own.aabb.get_longest_axis_size() * 0.5
-			target.morph_to(PointSampler.sphere(r, own.size(), {"color": Color(0.9, 0.9, 1.0)}), 1.8)
+			target.set_meta("home", target.data)
+			target.morph_to(_sphere_target(target), 1.8)
 		else:
 			target.morph_to(target.get_meta("home"), 1.8)
 			target.remove_meta("home")
@@ -359,14 +402,14 @@ func _build_hud() -> void:
 	_info.position = Vector2(16, 12)
 	_info.add_theme_color_override("font_shadow_color", Color.BLACK)
 	_info.text = "\n".join([
-		"WASD move · Shift sprint · Space jump · mouse look",
+		"WASD move · Shift sprint · Space jump · mouse look (first person)",
 		"LMB shoot (chip points off) · RMB paint",
 		"Aim at something, then:",
 		"  E morph · Q dissolve / reassemble · F explode",
 		"  V vibrate · G wobble · H heal holes",
 		"  [ / ] fewer / more dots per point",
 		"- / = less / more detail · 0 automatic (holds 60 fps)",
-		"F10 switch renderer (Compatibility is faster on weak GPUs)",
+		"F9 smoothing filter on/off · F10 switch renderer (Compatibility is faster)",
 		"R restore everything · Esc free mouse",
 	])
 	layer.add_child(_info)
@@ -442,7 +485,7 @@ func _setup_input() -> void:
 		"explode": KEY_F, "vibrate": KEY_V, "wobble": KEY_G, "heal": KEY_H, "restore": KEY_R,
 		"density_down": KEY_BRACKETLEFT, "density_up": KEY_BRACKETRIGHT,
 		"detail_down": KEY_MINUS, "detail_up": KEY_EQUAL, "detail_auto": KEY_0,
-		"switch_renderer": KEY_F10,
+		"switch_renderer": KEY_F10, "toggle_blend": KEY_F9,
 	}
 	for action in keys:
 		if not InputMap.has_action(action):

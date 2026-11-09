@@ -24,6 +24,10 @@ func _ready() -> void:
 	if "--hide-clouds" in args:
 		for c in get_tree().get_nodes_in_group(&"point_clouds"):
 			(c as Node3D).visible = false
+	if "--hide-ground" in args:
+		for c in get_tree().get_nodes_in_group(&"point_clouds"):
+			if c.name.begins_with("Tile"):
+				(c as Node3D).visible = false
 	if "--no-shadows" in args:
 		for c in main.get_children():
 			if c is DirectionalLight3D:

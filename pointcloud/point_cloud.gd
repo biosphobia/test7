@@ -17,6 +17,7 @@ extends GeometryInstance3D
 ##     cloud.morph_to(PointSampler.sphere(1.2, 1000), 2.0)
 ##     cloud.carve(hit_position, 0.4)          # knock points off
 
+signal morph_started
 signal morph_finished
 signal heal_finished
 
@@ -30,6 +31,16 @@ const LOD_MIN_POINTS := 1500
 ## points drawn on screen (shadow maps are blurry anyway, and every shadow
 ## cascade redraws all casters).
 const SHADOW_DETAIL := 0.25
+## Carves applied on the GPU before being folded into the debris texture.
+const MAX_CARVES := 48
+## Fold pending carves into the debris texture once this many accumulate (or
+## shortly after the last shot).
+const CARVE_BAKE_AT := 16
+## Most morph targets kept on the GPU per cloud (oldest dropped first).
+const MORPH_CACHE_SIZE := 8
+const PROXY_SHADER := preload("res://pointcloud/flat_proxy.gdshader")
+## Resolution of a flat proxy's hole mask and paint map.
+const PROXY_RES := 128
 
 ## Level of detail, shared by all clouds: the on-screen spacing (pixels) to aim
 ## for between drawn points. Clouds draw only as many points as they need for
@@ -50,7 +61,8 @@ static var _clock_frame := -1
 @export var data: PointCloudData:
 	set(v):
 		data = v
-		_rebuild(false)
+		if not _swapping:
+			_rebuild(false)
 
 @export_group("Source Mesh")
 ## If set and `data` is empty, this mesh is sampled when the node is ready.
@@ -163,6 +175,17 @@ static var _clock_frame := -1
 		_apply_shader()
 ## Draw fewer, larger points when the cloud is small on screen.
 @export var lod := true
+## Multiplies the level-of-detail spacing for this cloud. Flat surfaces whose
+## detail comes from `surface_texture` (floors, walls) look the same with far
+## fewer, bigger dots: try 2-3 there.
+@export var lod_spacing_scale := 1.0
+## For flat clouds (terrain tiles whose surface is the top of their bounding
+## box, like PointSampler.plane()): while intact, draw the surface as one
+## textured plane with the same look instead of dots. Shots cut holes into the
+## plane and only the hole walls and debris are drawn as dots; morph, dissolve
+## and other effects switch back to the full dot cloud. Saves most of the cost
+## of large floors.
+@export var flat_proxy := false
 
 @export_group("Vibrate")
 @export_range(0.0, 0.5, 0.001) var vibrate_amplitude := 0.0:
@@ -267,15 +290,14 @@ var _mesh: ArrayMesh
 var _multimesh: MultiMesh
 var _mesh_count := -1
 var _tex_h := 1
-var _pos_tex: ImageTexture
-var _col_tex: ImageTexture
-var _nrm_tex: ImageTexture
-var _curv_tex: ImageTexture
-var _tcurv_tex: ImageTexture
+var _cur: _ShapeTex      # GPU textures of `data`
+var _tgt: _ShapeTex      # GPU textures of the morph target
+var _cache := {}         # morph target key -> _ShapeTex
+var _cache_order := []
+var _prep := []          # running morph-target preparations
+var _queued_morph := []  # [key, duration] waiting for its preparation
+var _swapping := false
 var _state_tex: ImageTexture
-var _tpos_tex: ImageTexture
-var _tcol_tex: ImageTexture
-var _tnrm_tex: ImageTexture
 var _bidx_tex: ImageTexture
 var _bwgt_tex: ImageTexture
 var _bone_tex: ImageTexture
@@ -293,8 +315,22 @@ var _has_debris := false
 var _state := PackedFloat32Array()
 var _state_dirty := false
 var _colors_dirty := false
-var _target: PointCloudData
+var _carves: Array[PackedFloat32Array] = []  # cx, cy, cz, t0, radius, force, ragged, seed
+var _carve_a := PackedVector4Array()
+var _carve_b := PackedVector4Array()
+var _last_carve_time := -100.0
+var _bake_task := -1
+var _bake_job: _BakeJob
 var _morph_tween: Tween
+var _proxy_inst := RID()
+var _proxy_mesh: PlaneMesh
+var _proxy_mat: ShaderMaterial
+var _proxy_for: PointCloudData
+var _proxy_on := false
+var _hole_img: Image
+var _hole_tex: ImageTexture
+var _paint_img: Image
+var _paint_tex: ImageTexture
 var _heal_tween: Tween
 
 var _impact_pos := PackedVector4Array()
@@ -325,6 +361,11 @@ func _init() -> void:
 	_impact_pos.fill(Vector4(0, 0, 0, -1))
 	_sp(&"impact_pos", _impact_pos)
 	_sp(&"impact_params", _impact_params)
+	_carve_a.resize(MAX_CARVES)
+	_carve_b.resize(MAX_CARVES)
+	_sp(&"carve_a", _carve_a)
+	_sp(&"carve_b", _carve_b)
+	_sp(&"carve_count", 0)
 	_sp(&"tex_width", TEX_WIDTH)
 	for p in [&"max_pixel_size", &"round_points", &"unshaded", &"roughness", &"metallic",
 			&"emission_strength", &"tint", &"tint_amount", &"vibrate_amplitude", &"vibrate_frequency",
@@ -361,6 +402,9 @@ func _process(delta: float) -> void:
 		_clock += delta
 	_sp(&"cloud_time", now())
 	_poll_grid_task()
+	_poll_prep()
+	_poll_bake()
+	_sync_flat_proxy()
 	_update_lod()
 	_sync_shadow_proxy()
 	if _state_dirty:
@@ -368,10 +412,10 @@ func _process(delta: float) -> void:
 		_state_tex = _upload(_state_tex, _state.to_byte_array(), Image.FORMAT_RGBAF)
 		_sp(&"state_tex", _state_tex)
 		_sp(&"has_debris", _has_debris)
-	if _colors_dirty:
+	if _colors_dirty and _cur:
+		# Painted colours: upload the 8-bit buffer as is (no conversion).
 		_colors_dirty = false
-		_col_tex = _upload_colors(_col_tex, data.colors)
-		_sp(&"col_tex", _col_tex)
+		_cur.col.update(Image.create_from_data(TEX_WIDTH, _tex_h, false, Image.FORMAT_RGBA8, _cur.col_bytes))
 	if skeleton and _skin_in_use and is_instance_valid(skeleton):
 		_update_bones()
 
@@ -479,47 +523,133 @@ func paint(world_pos: Vector3, radius: float, color: Color, hardness := 0.5) -> 
 		var hits := _grid.query(local, r)
 		if hits.is_empty():
 			return
+		# Take the arrays out of their owners while editing so writes don't
+		# trigger a copy of the whole array (copy-on-write).
 		var cols := data.colors
+		data.colors = PackedColorArray()
+		var bytes := _cur.col_bytes
+		_cur.col_bytes = PackedByteArray()
 		var pos := data.positions
+		var has_cols := cols.size() == pos.size()
 		for i in hits:
 			var f := 1.0 - pos[i].distance_to(local) / r
-			cols[i] = cols[i].lerp(color, clampf(f / maxf(1.0 - hardness, 0.01), 0.0, 1.0))
+			var base := cols[i] if has_cols else Color.WHITE
+			var c := base.lerp(color, clampf(f / maxf(1.0 - hardness, 0.01), 0.0, 1.0))
+			c.a = base.a
+			if has_cols:
+				cols[i] = c
+			var b := i * 4
+			bytes[b] = c.r8
+			bytes[b + 1] = c.g8
+			bytes[b + 2] = c.b8
 		data.colors = cols
-		_colors_dirty = true)
+		_cur.col_bytes = bytes
+		_colors_dirty = true
+		if _paint_img:
+			_mask_circle(_paint_img, local, r, color, hardness)
+			_paint_tex.update(_paint_img))
 
 
 ## Knocks points within `radius` of a world position off the model. They fly
 ## outward with speed `force`, tumble under debris_gravity and fade out over
-## debris_lifetime. Returns immediately; the effect appears next frame.
+## debris_lifetime; the dots around the hole become its wall (normals facing
+## into it, darkened like a cavity).
+##
+## Costs almost nothing on the main thread: the carve is handed to the shader
+## as a sphere, and a worker thread later folds batches of carves into the
+## debris texture using exactly the same maths.
 func carve(world_pos: Vector3, radius: float, force := 2.0, ragged := 0.35) -> void:
-	_when_grid_ready(func():
-		var local := _world_to_rest(world_pos)
-		var r := radius / _avg_scale()
-		var hits := _grid.query(local, r)
-		if hits.is_empty():
+	if data == null or data.size() == 0:
+		return
+	if _carves.size() >= MAX_CARVES:
+		_bake_now()
+	var c := _world_to_rest(world_pos)
+	var seed := randi() & 0xFFFFFF
+	_carves.append(PackedFloat32Array([c.x, c.y, c.z, now(), radius / _avg_scale(), force, ragged, float(seed)]))
+	_last_carve_time = now()
+	_has_debris = true
+	_sp(&"has_debris", true)
+	_push_carves()
+	prepare_interaction()  # make sure the grid exists for baking
+
+
+func _push_carves() -> void:
+	for i in MAX_CARVES:
+		if i < _carves.size():
+			var k := _carves[i]
+			_carve_a[i] = Vector4(k[0], k[1], k[2], k[3])
+			_carve_b[i] = Vector4(k[4], k[5], k[6], k[7])
+		else:
+			_carve_a[i] = Vector4.ZERO
+			_carve_b[i] = Vector4.ZERO
+	_sp(&"carve_a", _carve_a)
+	_sp(&"carve_b", _carve_b)
+	_sp(&"carve_count", _carves.size())
+	if _proxy_mat:
+		_proxy_mat.set_shader_parameter(&"carve_a", _carve_a)
+		_proxy_mat.set_shader_parameter(&"carve_b", _carve_b)
+		_proxy_mat.set_shader_parameter(&"carve_count", _carves.size())
+
+
+func _poll_bake() -> void:
+	if _bake_task >= 0:
+		if not WorkerThreadPool.is_task_completed(_bake_task):
 			return
-		var t := now()
-		var pos := data.positions
-		var rng := RandomNumberGenerator.new()
-		rng.seed = hash(t)
-		for i in hits:
-			if _state[i * 4] >= 0.0:
-				continue
-			var d := pos[i].distance_to(local)
-			# Ragged edge: some points near the rim survive.
-			if d > r * (1.0 - ragged * rng.randf()):
-				continue
-			var dir := (pos[i] - local).normalized()
-			if dir == Vector3.ZERO:
-				dir = Vector3.UP
-			var vel := (dir + _rand_unit(rng) * 0.6) * force * rng.randf_range(0.4, 1.4)
-			var k := i * 4
-			_state[k] = t + (d / r) * 0.08  # hole opens from the centre outward
-			_has_debris = true
-			_state[k + 1] = vel.x
-			_state[k + 2] = vel.y
-			_state[k + 3] = vel.z
-		_state_dirty = true)
+		_finish_bake()
+	if _carves.is_empty() or _grid == null:
+		return
+	if _carves.size() >= CARVE_BAKE_AT or now() - _last_carve_time > 0.75:
+		_start_bake()
+
+
+func _start_bake() -> void:
+	_bake_job = _BakeJob.new()
+	_bake_job.grid = _grid
+	_bake_job.gen = _grid_gen
+	_bake_job.positions = data.positions
+	_bake_job.state = _state
+	_bake_job.carves = _carves.duplicate()
+	_bake_job.tex_h = _tex_h
+	_bake_task = WorkerThreadPool.add_task(_bake_job.run, true, "PointCloud carve bake")
+
+
+func _finish_bake() -> void:
+	WorkerThreadPool.wait_for_task_completion(_bake_task)
+	_bake_task = -1
+	var job := _bake_job
+	_bake_job = null
+	if job.gen != _grid_gen or job.image == null:
+		return  # data changed meanwhile; the carves are still pending
+	_state = job.state
+	_state_tex = _upload_image(_state_tex, job.image)
+	_sp(&"state_tex", _state_tex)
+	if _hole_img:
+		for c in job.carves:
+			_mask_circle(_hole_img, Vector3(c[0], c[1], c[2]), c[4] * 1.6, Color.WHITE, 1.0)
+		_hole_tex.update(_hole_img)
+	# Those carves now live in the texture: drop them from the shader list
+	# in the same frame, so nothing visibly changes.
+	_carves = _carves.slice(job.carves.size())
+	_push_carves()
+
+
+## Folds every pending carve into the debris texture right now (used before
+## the point layout changes, e.g. when a morph completes).
+func _bake_now() -> void:
+	if _carves.is_empty():
+		return
+	if _bake_task >= 0:
+		_finish_bake()
+	if _carves.is_empty():
+		return
+	if _grid == null:
+		if _grid_task >= 0:
+			WorkerThreadPool.wait_for_task_completion(_grid_task)
+			_poll_grid_task()
+		if _grid == null:
+			_grid = PointGrid.build(data.positions, data.aabb)
+	_start_bake()
+	_finish_bake()
 
 
 ## Sends a ripple through the points around a world position.
@@ -537,6 +667,7 @@ func impact(world_pos: Vector3, strength := 0.15, speed := 4.0, width := 0.25, d
 func restore() -> void:
 	if _heal_tween:
 		_heal_tween.kill()
+	_clear_carves()
 	_reset_state()
 	_state_dirty = true
 	dissolve = 0.0
@@ -552,11 +683,24 @@ func heal(duration := 1.5) -> Tween:
 	_heal_tween.tween_method(func(v: float): _sp(&"heal", v), 0.0, 1.0, duration) \
 		.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN_OUT)
 	_heal_tween.tween_callback(func():
+		_clear_carves()
 		_reset_state()
 		_state_dirty = true
 		_sp(&"heal", 0.0)
 		heal_finished.emit())
 	return _heal_tween
+
+
+func _clear_carves() -> void:
+	if _bake_task >= 0:
+		WorkerThreadPool.wait_for_task_completion(_bake_task)
+		_bake_task = -1
+		_bake_job = null
+	_carves.clear()
+	_push_carves()
+	if _hole_img:
+		_hole_img.fill(Color.BLACK)
+		_hole_tex.update(_hole_img)
 
 
 ## Crumbles the model away. Use reassemble() to bring it back.
@@ -583,63 +727,163 @@ func explode_pulse(strength := 1.5, duration := 1.2) -> Tween:
 	return tw
 
 
-## Morphs into another model. Point counts are matched automatically. With
-## `match_shape` the points are paired by position so the model flows into
-## the new one; without it they swarm randomly. When finished, `data` becomes
-## the target.
-func morph_to(target: PointCloudData, duration := 2.0, match_shape := true) -> Tween:
+## Morphs into another model. `target` is a PointCloudData, or a Callable
+## that returns one (it then runs on a worker thread, so generating the shape
+## doesn't stall the game either; build meshes on the main thread and sample
+## them with PointSampler.from_snapshot() inside the Callable). Point counts are matched automatically;
+## with `match_shape` points are paired by position so the model flows into
+## the new one.
+##
+## Never blocks: matching and texture preparation run on worker threads and
+## the GPU upload is spread over a few frames, then the morph starts
+## (`morph_started`). Targets stay cached on the GPU, so morphing to the same
+## target again (or back) starts instantly. Use prepare_morph_target() to warm
+## the cache ahead of time.
+func morph_to(target: Variant, duration := 2.0, match_shape := true) -> void:
 	if data == null or target == null:
-		return null
+		return
+	_queued_morph = [target, duration]
+	if is_morph_target_ready(target):
+		_start_queued_morph()
+	else:
+		prepare_morph_target(target, match_shape)
+
+
+## Prepares a morph target in the background (see morph_to()).
+func prepare_morph_target(target: Variant, match_shape := true) -> void:
+	if data == null or target == null or is_morph_target_ready(target):
+		return
+	for p in _prep:
+		if p["key"] == target:
+			return
+	var job := _PrepJob.new()
+	job.source = data
+	job.target = target
+	job.match_shape = match_shape
+	job.count = data.size()
+	job.tex_h = _tex_h
+	_prep.append({"key": target, "job": job, "shape": null,
+		"task": WorkerThreadPool.add_task(job.run, false, "PointCloud morph target")})
+
+
+func is_morph_target_ready(target: Variant) -> bool:
+	if not _cache.has(target):
+		return false
+	var sh: _ShapeTex = _cache[target]
+	return sh.count == get_point_count() and sh.is_ready()
+
+
+func _poll_prep() -> void:
+	for p in _prep.duplicate():
+		if p["shape"] == null:
+			if not WorkerThreadPool.is_task_completed(p["task"]):
+				continue
+			WorkerThreadPool.wait_for_task_completion(p["task"])
+			var job: _PrepJob = p["job"]
+			if job.result == null or job.count != get_point_count():
+				_prep.erase(p)
+				continue
+			p["shape"] = _ShapeTex.from_images(job.result, job.images)
+		# One texture upload per frame keeps the GPU transfer from spiking.
+		if (p["shape"] as _ShapeTex).upload_step():
+			_prep.erase(p)
+			_cache_put(p["key"], p["shape"])
+			if not _queued_morph.is_empty() and _queued_morph[0] == p["key"]:
+				_start_queued_morph()
+		return
+
+
+func _cache_put(key: Variant, sh: _ShapeTex) -> void:
+	if not _cache.has(key):
+		_cache_order.append(key)
+	_cache[key] = sh
+	while _cache_order.size() > MORPH_CACHE_SIZE:
+		var old = _cache_order.pop_front()
+		if _cache.get(old) != _cur and _cache.get(old) != _tgt:
+			_cache.erase(old)
+		else:
+			_cache_order.append(old)
+			break
+
+
+func _start_queued_morph() -> void:
+	var key = _queued_morph[0]
+	var duration: float = _queued_morph[1]
+	_queued_morph = []
 	if _morph_tween and _morph_tween.is_running():
 		_morph_tween.kill()
 		_finish_morph()
-	var t := target.resampled(data.size())
-	if match_shape:
-		t = PointSampler.match_order(data, t)
-	set_morph_target(t)
+	# Keep the current shape on the GPU too, so morphing back is instant.
+	if _cur and data:
+		_cache_put(data, _cur)
+	_tgt = _cache[key]
+	_bind_target(_tgt)
+	if data:
+		_set_custom_aabb(data.aabb.merge(_tgt.data.aabb))
 	morph = 0.0
 	_morph_tween = create_tween()
 	_morph_tween.tween_property(self, "morph", 1.0, duration).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
 	_morph_tween.tween_callback(_finish_morph)
-	return _morph_tween
+	morph_started.emit()
 
 
 ## Sets the morph target without animating; drive `morph` yourself (0..1).
-## The target must have exactly get_point_count() points.
+## The target must have exactly get_point_count() points. Uploads right away
+## (use morph_to() for the stutter-free path).
 func set_morph_target(t: PointCloudData) -> void:
 	assert(t.size() == get_point_count(), "Morph target must have the same point count")
-	_target = t
-	var total := TEX_WIDTH * _tex_h
-	_tpos_tex = _upload(_tpos_tex, _padded_v3(t.positions, total).to_byte_array(), Image.FORMAT_RGBF)
-	_tcol_tex = _upload_colors(_tcol_tex, t.colors)
-	_tnrm_tex = _upload(_tnrm_tex, _padded_v3(t.normals, total).to_byte_array(), Image.FORMAT_RGBF, Image.FORMAT_RGBAH)
-	_tcurv_tex = _upload_tensors(_tcurv_tex, t.curvatures)
-	_sp(&"target_curv_tex", _tcurv_tex)
-	_sp(&"target_pos_tex", _tpos_tex)
-	_sp(&"target_col_tex", _tcol_tex)
-	_sp(&"target_nrm_tex", _tnrm_tex)
-	# Grow culling bounds to cover both shapes during the morph.
+	var sh := _ShapeTex.from_images(t, _shape_images(t, _tex_h))
+	while not sh.upload_step():
+		pass
+	_cache_put(t, sh)
+	_tgt = sh
+	_bind_target(sh)
 	if data:
 		_set_custom_aabb(data.aabb.merge(t.aabb))
 
 
 func _finish_morph() -> void:
-	if _target == null:
+	if _tgt == null:
 		return
-	var t := _target
-	_target = null
-	_tpos_tex = null
-	_tcol_tex = null
-	_tnrm_tex = null
-	_tcurv_tex = null
-	var old_state := _state
-	data = t          # re-uploads; also clears skinning if the target isn't skinned
-	if old_state.size() == _state.size():
-		_state = old_state  # carved holes survive the morph
-		_has_debris = true
-		_state_dirty = true
+	# Pending carves refer to the old point positions: fold them in first.
+	_bake_now()
+	_cur = _tgt
+	_tgt = null
+	# Swap in the target's textures; nothing is re-uploaded.
+	_swapping = true
+	data = _cur.data
+	_swapping = false
+	_bind_current()
 	morph = 0.0
 	morph_finished.emit()
+
+
+func _bind_current() -> void:
+	_sp(&"pos_tex", _cur.pos)
+	_sp(&"col_tex", _cur.col)
+	_sp(&"nrm_tex", _cur.nrm)
+	_sp(&"curv_tex", _cur.curv)
+	if _tgt == null:
+		_bind_target(_cur)
+	_sp(&"use_skin", data.is_skinned() and _skin_in_use != null)
+	_sp(&"point_spacing", data.suggested_point_size / PointSampler.SIZE_FACTOR)
+	_sp(&"interior_scale", data.interior_point_size / data.suggested_point_size
+			if data.interior_point_size > 0.0 and data.suggested_point_size > 0.0 else 1.0)
+	_sp(&"bounds_min", data.aabb.position)
+	_sp(&"bounds_size", data.aabb.size)
+	_update_point_size()
+	_update_aabb()
+	_drawn = Vector3i(-1, -1, -1)
+	_shadow_drawn = Vector3i(-1, -1, -1)
+	_grid = null
+	_grid_gen += 1
+
+
+func _bind_target(sh: _ShapeTex) -> void:
+	_sp(&"target_pos_tex", sh.pos)
+	_sp(&"target_col_tex", sh.col)
+	_sp(&"target_nrm_tex", sh.nrm)
+	_sp(&"target_curv_tex", sh.curv)
 
 
 # ============================================================== skinning
@@ -713,19 +957,9 @@ func _rebuild(keep_state: bool) -> void:
 	if _mesh_count != n:
 		_build_mesh(n)
 
-	_pos_tex = _upload(_pos_tex, _padded_v3(data.positions, total).to_byte_array(), Image.FORMAT_RGBF)
-	_col_tex = _upload_colors(_col_tex, data.colors)
-	_nrm_tex = _upload(_nrm_tex, _padded_v3(data.normals, total).to_byte_array(), Image.FORMAT_RGBF, Image.FORMAT_RGBAH)
-	_curv_tex = _upload_tensors(_curv_tex, data.curvatures)
-	_sp(&"curv_tex", _curv_tex)
-	_sp(&"pos_tex", _pos_tex)
-	_sp(&"col_tex", _col_tex)
-	_sp(&"nrm_tex", _nrm_tex)
-	if not _target:
-		_sp(&"target_pos_tex", _pos_tex)
-		_sp(&"target_col_tex", _col_tex)
-		_sp(&"target_nrm_tex", _nrm_tex)
-		_sp(&"target_curv_tex", _curv_tex)
+	_cur = _ShapeTex.from_images(data, _shape_images(data, _tex_h))
+	while not _cur.upload_step():
+		pass
 
 	if not keep_state or _state.size() != total * 4:
 		_state.resize(total * 4)
@@ -742,17 +976,9 @@ func _rebuild(keep_state: bool) -> void:
 		_bwgt_tex = _upload(_bwgt_tex, bw.to_byte_array(), Image.FORMAT_RGBAF)
 		_sp(&"bone_idx_tex", _bidx_tex)
 		_sp(&"bone_wgt_tex", _bwgt_tex)
-	_sp(&"use_skin", data.is_skinned() and _skin_in_use != null)
-
-	# Average distance between neighbouring surface points; sub-dots spread
-	# over a disk of about this size.
-	_sp(&"point_spacing", data.suggested_point_size / PointSampler.SIZE_FACTOR)
-	_sp(&"bounds_min", data.aabb.position)
-	_sp(&"bounds_size", data.aabb.size)
-	_update_point_size()
-	_update_aabb()
-	_grid = null
-	_grid_gen += 1
+	if not keep_state:
+		_clear_carves()
+	_bind_current()
 
 
 func _build_mesh(n: int) -> void:
@@ -809,7 +1035,7 @@ func _update_lod() -> void:
 			if cam.projection == Camera3D.PROJECTION_PERSPECTIVE:
 				px_per_unit = view_h * 0.5 / tan(deg_to_rad(cam.fov) * 0.5) / d
 			var spacing := data.suggested_point_size / PointSampler.SIZE_FACTOR * _avg_scale()
-			f = pow(spacing * px_per_unit / lod_spacing_px, 2.0)
+			f = pow(spacing * px_per_unit / (lod_spacing_px * lod_spacing_scale), 2.0)
 			if f < 1.0:
 				# Quantise to steps of 1/sqrt(2) so counts don't change every frame.
 				f = pow(2.0, floorf(log(maxf(f, 1e-9)) / log(2.0) * 2.0) / 2.0)
@@ -817,6 +1043,9 @@ func _update_lod() -> void:
 	var interior := _has_debris or dissolve > 0.0 or explode != 0.0 or morph > 0.0
 	var a := clampi(ceili(ns * f), mini(ns, LOD_MIN_POINTS), ns)
 	var b := ceili(ni * f) if interior else 0
+	if _proxy_on and not _has_debris:
+		a = 0  # the proxy plane shows the intact surface
+		b = 0
 	_set_drawn(_multimesh, _mat, Vector3i(a, b, density), ns, false)
 	var sa := clampi(ceili(a * SHADOW_DETAIL), mini(ns, LOD_MIN_POINTS / 2), ns)
 	_set_drawn(_shadow_mm, _shadow_mat, Vector3i(sa, ceili(b * SHADOW_DETAIL), density), ns, true)
@@ -850,12 +1079,92 @@ func _sync_shadow_proxy() -> void:
 			RenderingServer.SHADOW_CASTING_SETTING_OFF)
 
 
+## Shows the proxy plane while the flat surface is intact and undisturbed.
+func _sync_flat_proxy() -> void:
+	if not flat_proxy or Engine.is_editor_hint() or data == null or data.size() == 0 or not is_inside_tree():
+		if _proxy_on:
+			_set_proxy_on(false)
+		return
+	if not _proxy_inst.is_valid():
+		_build_flat_proxy()
+	var still := morph == 0.0 and _tgt == null and dissolve == 0.0 and explode == 0.0 \
+			and vibrate_amplitude == 0.0 and wobble_amplitude == 0.0
+	var on := still and data == _proxy_for and is_visible_in_tree()
+	if on != _proxy_on:
+		_set_proxy_on(on)
+	if on:
+		RenderingServer.instance_set_transform(_proxy_inst, global_transform)
+
+
+func _set_proxy_on(on: bool) -> void:
+	_proxy_on = on
+	if _proxy_inst.is_valid():
+		RenderingServer.instance_set_visible(_proxy_inst, on)
+	_sp(&"proxy_mode", on)
+	_drawn = Vector3i(-1, -1, -1)
+
+
+func _build_flat_proxy() -> void:
+	_proxy_for = data
+	var box := data.aabb
+	_proxy_mesh = PlaneMesh.new()
+	_proxy_mesh.size = Vector2(box.size.x, box.size.z)
+	_proxy_mesh.center_offset = Vector3(box.get_center().x, box.end.y, box.get_center().z)
+	# Same look as the surface dots: their average colour, texture, material.
+	var avg := Color(0, 0, 0, 0)
+	var ns := data.get_surface_count()
+	var step := maxi(1, ns / 2000)
+	var taken := 0
+	for i in range(0, ns, step):
+		avg += data.colors[i] if data.colors.size() == data.size() else Color.WHITE
+		taken += 1
+	avg = avg / maxf(taken, 1.0)
+	avg.a = 1.0
+	_hole_img = Image.create(PROXY_RES, PROXY_RES, false, Image.FORMAT_L8)
+	_hole_tex = ImageTexture.create_from_image(_hole_img)
+	_paint_img = Image.create(PROXY_RES, PROXY_RES, false, Image.FORMAT_RGBA8)
+	_paint_img.fill(Color.WHITE)
+	_paint_tex = ImageTexture.create_from_image(_paint_img)
+	_proxy_mat = ShaderMaterial.new()
+	_proxy_mat.shader = PROXY_SHADER
+	for kv in [["base_color", avg], ["use_surface_texture", surface_texture != null],
+			["surface_texture", surface_texture], ["texture_tile", texture_tile],
+			["texture_offset", texture_offset], ["hole_mask", _hole_tex], ["paint_tex", _paint_tex],
+			["bounds_min", box.position], ["bounds_size", box.size], ["roughness", roughness],
+			["metallic", metallic]]:
+		_proxy_mat.set_shader_parameter(kv[0], kv[1])
+	_proxy_mesh.material = _proxy_mat
+	_proxy_inst = RenderingServer.instance_create2(_proxy_mesh.get_rid(), get_world_3d().scenario)
+	RenderingServer.instance_set_layer_mask(_proxy_inst, layers)
+	RenderingServer.instance_geometry_set_cast_shadows_setting(_proxy_inst,
+			RenderingServer.SHADOW_CASTING_SETTING_OFF if cast_shadow == GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+			else RenderingServer.SHADOW_CASTING_SETTING_ON)
+	_push_carves()
+
+
+## Rasterises a soft disc (top-down, in local xz) into a proxy map.
+func _mask_circle(img: Image, center: Vector3, radius: float, color: Color, hardness: float) -> void:
+	var box := _proxy_for.aabb if _proxy_for else data.aabb
+	var sx := PROXY_RES / maxf(box.size.x, 1e-4)
+	var sz := PROXY_RES / maxf(box.size.z, 1e-4)
+	var cx := (center.x - box.position.x) * sx
+	var cz := (center.z - box.position.z) * sz
+	var rx := radius * sx
+	for y in range(maxi(0, int(cz - radius * sz) - 1), mini(PROXY_RES, int(cz + radius * sz) + 2)):
+		for x in range(maxi(0, int(cx - rx) - 1), mini(PROXY_RES, int(cx + rx) + 2)):
+			var d := Vector2((x + 0.5 - cx) / sx, (y + 0.5 - cz) / sz).length() / maxf(radius, 1e-6)
+			if d > 1.0:
+				continue
+			var f := clampf((1.0 - d) / maxf(1.0 - hardness, 0.01), 0.0, 1.0)
+			img.set_pixel(x, y, img.get_pixel(x, y).lerp(color, f))
+
+
 func _apply_shader() -> void:
 	var sh: Shader = shader_override if shader_override else (EXACT_SHADER if exact_depth else DEFAULT_SHADER)
 	if _mat:
 		_mat.shader = sh
 	if _shadow_mat:
-		_shadow_mat.shader = sh
+		_shadow_mat.shader = shader_override if shader_override else DEFAULT_SHADER
 
 
 static var _chunk_mesh: ArrayMesh
@@ -906,17 +1215,28 @@ func _sp(param: StringName, value: Variant) -> void:
 		_shadow_mat.set_shader_parameter(param, value)
 
 
-## Curvature tensors: 8 floats = two RGBA texels per point, side by side in
-## a texture twice as wide as the others.
-func _upload_tensors(tex: ImageTexture, arr: PackedFloat32Array) -> ImageTexture:
-	var a := arr.duplicate()
-	a.resize(TEX_WIDTH * _tex_h * 8)
-	var img := Image.create_from_data(TEX_WIDTH * 2, _tex_h, false, Image.FORMAT_RGBAF, a.to_byte_array())
-	img.convert(Image.FORMAT_RGBAH)  # half floats: plenty for curvature, half the bandwidth
-	if tex and tex.get_width() == TEX_WIDTH * 2 and tex.get_height() == _tex_h:
-		tex.update(img)
-		return tex
-	return ImageTexture.create_from_image(img)
+## CPU-side images for one point layout: position (RGB32F), colour (RGBA8),
+## normal (RGBA16F) and curvature tensor (RGBA16F, two texels per point).
+## Pure data work, safe on worker threads.
+static func _shape_images(d: PointCloudData, tex_h: int) -> Dictionary:
+	var total := TEX_WIDTH * tex_h
+	var c := d.colors.duplicate()
+	var had := c.size()
+	c.resize(total)
+	if had == 0:
+		c.fill(Color.WHITE)
+	var col := Image.create_from_data(TEX_WIDTH, tex_h, false, Image.FORMAT_RGBAF, c.to_byte_array())
+	col.convert(Image.FORMAT_RGBA8)
+	var nrm := Image.create_from_data(TEX_WIDTH, tex_h, false, Image.FORMAT_RGBF, _padded_v3(d.normals, total).to_byte_array())
+	nrm.convert(Image.FORMAT_RGBAH)
+	var k := d.curvatures.duplicate()
+	k.resize(total * 8)
+	var curv := Image.create_from_data(TEX_WIDTH * 2, tex_h, false, Image.FORMAT_RGBAF, k.to_byte_array())
+	curv.convert(Image.FORMAT_RGBAH)
+	return {
+		"pos": Image.create_from_data(TEX_WIDTH, tex_h, false, Image.FORMAT_RGBF, _padded_v3(d.positions, total).to_byte_array()),
+		"col": col, "nrm": nrm, "curv": curv,
+	}
 
 
 static func _padded_v3(arr: PackedVector3Array, total: int) -> PackedVector3Array:
@@ -925,15 +1245,12 @@ static func _padded_v3(arr: PackedVector3Array, total: int) -> PackedVector3Arra
 	return a
 
 
-func _upload_colors(tex: ImageTexture, cols: PackedColorArray) -> ImageTexture:
-	var total := TEX_WIDTH * _tex_h
-	var c := cols.duplicate()
-	var had := c.size()
-	c.resize(total)
-	if had == 0:
-		c.fill(Color.WHITE)
-	# 8 bits per channel on the GPU: a quarter of the float bandwidth.
-	return _upload(tex, c.to_byte_array(), Image.FORMAT_RGBAF, Image.FORMAT_RGBA8)
+func _upload_image(tex: ImageTexture, img: Image) -> ImageTexture:
+	if tex and tex.get_width() == img.get_width() and tex.get_height() == img.get_height() \
+			and tex.get_format() == img.get_format():
+		tex.update(img)
+		return tex
+	return ImageTexture.create_from_image(img)
 
 
 ## Uploads raw data in format `fmt`, optionally converted (natively, fast)
@@ -987,7 +1304,7 @@ func _when_grid_ready(action: Callable) -> void:
 	_grid_job.gen = _grid_gen
 	_grid_job.positions = data.positions
 	_grid_job.bounds = data.aabb
-	_grid_task = WorkerThreadPool.add_task(_grid_job.run, false, "PointCloud grid")
+	_grid_task = WorkerThreadPool.add_task(_grid_job.run, true, "PointCloud grid")
 
 
 func _poll_grid_task() -> void:
@@ -1010,6 +1327,10 @@ func _poll_grid_task() -> void:
 
 
 func _exit_tree() -> void:
+	if _proxy_inst.is_valid():
+		RenderingServer.free_rid(_proxy_inst)
+		_proxy_inst = RID()
+		_proxy_on = false
 	if _shadow_inst.is_valid():
 		RenderingServer.free_rid(_shadow_inst)
 		_shadow_inst = RID()
@@ -1018,6 +1339,12 @@ func _exit_tree() -> void:
 		_grid_task = -1
 		_grid_job = null
 		_pending.clear()
+	if _bake_task >= 0:
+		WorkerThreadPool.wait_for_task_completion(_bake_task)
+		_bake_task = -1
+	for p in _prep:
+		WorkerThreadPool.wait_for_task_completion(p["task"])
+	_prep.clear()
 
 
 class _GridJob:
@@ -1042,3 +1369,134 @@ static func _rand_unit(rng: RandomNumberGenerator) -> Vector3:
 	var a := rng.randf() * TAU
 	var r := sqrt(1.0 - z * z)
 	return Vector3(r * cos(a), z, r * sin(a))
+
+
+# ============================================================== jobs & helpers
+
+## GPU textures for one point layout (current shape or a morph target).
+class _ShapeTex:
+	extends RefCounted
+	var data: PointCloudData
+	var count := 0
+	var pos: ImageTexture
+	var col: ImageTexture
+	var nrm: ImageTexture
+	var curv: ImageTexture
+	var col_bytes := PackedByteArray()  # RGBA8 copy of the colours, for painting
+	var _pending: Array = []
+
+	static func from_images(d: PointCloudData, images: Dictionary) -> _ShapeTex:
+		var sh := _ShapeTex.new()
+		sh.data = d
+		sh.count = d.size()
+		sh.col_bytes = (images["col"] as Image).get_data()
+		for f in ["pos", "col", "nrm", "curv"]:
+			sh._pending.append([f, images[f]])
+		return sh
+
+	func is_ready() -> bool:
+		return _pending.is_empty() and pos != null
+
+	## Uploads one texture; returns true once all are on the GPU.
+	func upload_step() -> bool:
+		if not _pending.is_empty():
+			var p: Array = _pending.pop_front()
+			set(p[0], ImageTexture.create_from_image(p[1]))
+		return _pending.is_empty()
+
+
+## Builds a morph target off the main thread: generate (if a Callable),
+## resample, match point order, and prepare the texture images.
+class _PrepJob:
+	extends RefCounted
+	var source: PointCloudData
+	var target: Variant
+	var match_shape := true
+	var count := 0
+	var tex_h := 1
+	var result: PointCloudData
+	var images: Dictionary
+
+	func run() -> void:
+		var t: PointCloudData = target.call() if target is Callable else target
+		if t == null or t.size() == 0:
+			return
+		t = t.resampled(count)
+		if match_shape and source:
+			t = PointSampler.match_order(source, t)
+		images = PointCloud._shape_images(t, tex_h)
+		result = t
+
+
+## Folds a batch of carves into the debris state on a worker thread.
+class _BakeJob:
+	extends RefCounted
+	var grid: PointGrid
+	var gen := 0
+	var positions: PackedVector3Array
+	var state: PackedFloat32Array
+	var carves: Array[PackedFloat32Array] = []
+	var tex_h := 1
+	var image: Image
+
+	func run() -> void:
+		for c in carves:
+			PointCloud._apply_carve(state, positions, grid, c)
+		image = Image.create_from_data(PointCloud.TEX_WIDTH, tex_h, false, Image.FORMAT_RGBAF, state.to_byte_array())
+
+
+## How far around a carve its wall (darkened, inward-facing dots) reaches,
+## relative to the radius. Must match the shader.
+const WALL_REACH := 1.7
+
+## Writes one carve into a debris state array. This is the same maths as the
+## shader's carve loop (same hashes), so baking changes nothing on screen.
+## State per point: x >= 0: detach time, yzw velocity. x == -1: intact.
+## -2 < x < -1: hole wall, cavity = -1 - x, yzw = vector to the hole centre.
+static func _apply_carve(state: PackedFloat32Array, positions: PackedVector3Array, grid: PointGrid, c: PackedFloat32Array) -> void:
+	var center := Vector3(c[0], c[1], c[2])
+	var t0 := c[3]
+	var r := c[4]
+	var force := c[5]
+	var ragged := c[6]
+	var seed := int(c[7])
+	for i in grid.query(center, r * WALL_REACH):
+		var k := i * 4
+		if state[k] >= 0.0:
+			continue
+		var p := positions[i]
+		var d := p.distance_to(center)
+		var key := (i * 1664525 + seed) & 0xFFFFFFFF
+		var r_eff := r * (1.0 - ragged * _hash01(key))
+		if d <= r_eff:
+			var dir := (p - center) / d if d > 1e-6 else Vector3.UP
+			var vel := (dir + _rand_dir(key ^ 0x68E31DA4) * 0.6) * force * (0.4 + _hash01(key + 7))
+			state[k] = t0 + d / r * 0.08
+			state[k + 1] = vel.x
+			state[k + 2] = vel.y
+			state[k + 3] = vel.z
+		else:
+			var cav := 1.0 - smoothstep(r_eff, r * WALL_REACH, d)
+			if cav > 0.0 and -1.0 - state[k] < cav:
+				var to_c := center - p
+				state[k] = -1.0 - minf(cav, 0.999)
+				state[k + 1] = to_c.x
+				state[k + 2] = to_c.y
+				state[k + 3] = to_c.z
+
+
+static func _pcg(v: int) -> int:
+	var st := (v * 747796405 + 2891336453) & 0xFFFFFFFF
+	var word := ((((st >> ((st >> 28) + 4)) ^ st) & 0xFFFFFFFF) * 277803737) & 0xFFFFFFFF
+	return ((word >> 22) ^ word) & 0xFFFFFFFF
+
+
+static func _hash01(v: int) -> float:
+	return float(_pcg(v & 0xFFFFFFFF)) / 4294967295.0
+
+
+static func _rand_dir(v: int) -> Vector3:
+	var z := _hash01(v) * 2.0 - 1.0
+	var a := _hash01(v ^ 0x9E3779B9) * TAU
+	var rr := sqrt(maxf(1.0 - z * z, 0.0))
+	return Vector3(rr * cos(a), z, rr * sin(a))

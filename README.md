@@ -34,7 +34,7 @@ Open the folder in **Godot 4.4 or newer** and press Play (`demo/main.tscn`).
 
 | Input | Action |
 |---|---|
-| WASD / Shift / Space / mouse | move, sprint, jump, look (third person) |
+| WASD / Shift / Space / mouse | move, sprint, jump, look (first person) |
 | LMB (hold) | shoot: knocks points off whatever you aim at |
 | RMB (hold) | paint points with a cycling colour |
 | E | morph (the shape-shifter cycles cube → sphere → torus → "POINTS"; anything else turns into a sphere and back) |
@@ -46,6 +46,7 @@ Open the folder in **Godot 4.4 or newer** and press Play (`demo/main.tscn`).
 | - / = / 0 | less / more detail by hand, or back to automatic (targets 60 fps) |
 | F10 | switch renderer: Compatibility (default, fastest) ↔ Forward+ |
 | R | restore everything instantly |
+| F9 | smoothing filter on/off (edge-aware blend over the 3D view) |
 | Esc | free the mouse (click to recapture) |
 
 The scene holds about 3.6 million stored points drawn as about 10.8 million
@@ -94,10 +95,21 @@ point_cloud.gdshader           draws `density` dots per point; each dot finds it
 * **Effects cost no CPU.** Vibrate, wobble, explode, dissolve, morph and ripples
   are shader uniforms. Every point gets a stable random seed from a hash of its
   index, which is what makes the motion look per-point.
-* **Destruction is per point.** `carve()` uses a spatial grid (built on a worker
-  thread) to find points near the hit. It writes a detach time and velocity
-  into a state texture, and the shader then flies those points ballistically
-  and fades them out. `heal()` pulls them back.
+* **Destruction is per point, with no stalls.** `carve()` hands the shader a
+  carve sphere: the shader detaches the dots inside it, flies them
+  ballistically as small lit beads and fades them out, and turns the dots
+  around it into the hole's wall (normals facing into the hole, darkened
+  like a cavity). A worker thread later folds batches of carves into a state
+  texture with exactly the same maths (same hashes), so nothing changes on
+  screen. `heal()` pulls the debris back.
+* **Morphs never block.** `morph_to()` prepares the target on a worker thread
+  (generating it too, if you pass a Callable), uploads its textures over a
+  few frames and then starts. Targets stay cached on the GPU, and finishing a
+  morph swaps textures instead of re-uploading. `prepare_morph_target()`
+  warms the cache ahead of time.
+* **Dots in flight look like beads.** Debris, dissolving, exploding and
+  mid-morph dots are drawn as small round dots with sphere-like shading
+  instead of flat surface discs.
 * **Animation.** Skinned meshes keep their bone indices and weights per point,
   and the bone matrices are uploaded each frame from the `Skeleton3D`. So an
   imported character with an `AnimationPlayer` animates as points without any
@@ -124,7 +136,8 @@ cube.vibrate_amplitude = 0.02
 cube.wobble_amplitude = 0.05
 cube.dissolve_out(3.0)                 # then cube.reassemble(2.0)
 cube.explode_pulse()
-cube.morph_to(PointSampler.sphere(1.2, 1000), 2.0)   # counts are matched for you
+cube.morph_to(PointSampler.sphere(1.2, 1000), 2.0)   # counts matched; never blocks
+cube.prepare_morph_target(other_shape)  # optional: warm up so the morph starts instantly
 cube.carve(hit_position, 0.4)          # chip a hole; points fly off
 cube.impact(hit_position)              # ripple through the surface
 cube.paint(hit_position, 0.5, Color.RED)
@@ -203,8 +216,16 @@ trades detail to hold the target. The main techniques:
   per-pixel depth.
 * **Smaller data.** 8-bit colours and half-float normals and curvature; the
   debris and ripple lookups are skipped while nothing is carved or hit.
-* **Tiled terrain.** Big surfaces such as the demo ground are split into
-  tiles, so off-screen tiles are culled and distant ones get LOD.
+* **Tiled terrain with a flat proxy.** The demo ground is split into tiles,
+  and each tile has `flat_proxy` on: while intact it's drawn as one plane
+  with exactly the dots' colour, texture and material. Shots cut holes into
+  the plane (pending carves analytically, baked ones through a small mask)
+  and only the hole walls and debris are drawn as dots. Effects such as
+  morph or dissolve switch the tile back to full dots. Uncarved floor costs
+  almost nothing.
+* **Shadow maps.** Shadow-pass dots are plain squares sized to close gaps
+  and pushed away from the light by about their radius, so shadows are solid
+  and surfaces don't shadow themselves.
 * **Lightweight renderer by default.** The project uses Godot's Compatibility
   (OpenGL) renderer, which is much cheaper on weak GPUs; it did a demo frame
   about 3.6× faster than Forward+ in testing. Press **F10** in game to switch
@@ -220,6 +241,9 @@ trades detail to hold the target. The main techniques:
 Measured with CPU-only software rendering (so only the ratio means
 anything), a demo frame went from 9.6 s to about 0.45 s at the same detail,
 roughly 20× less work per frame, before auto quality does anything.
+
+`tests/hitch_test.tscn` measures how long gameplay actions block the main
+thread (morphing, shooting); they are all well under a millisecond.
 
 ### Limits
 

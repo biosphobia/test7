@@ -17,6 +17,9 @@ uniform int surface_drawn = 2147483647;
 // Skip surface dots that face away from the view (or light). They're hidden
 // behind the front of a closed model anyway.
 uniform bool backface_cull = true;
+// Set while a flat proxy plane draws the intact surface: only dots that are
+// part of a hole wall or flying debris are drawn.
+uniform bool proxy_mode = false;
 uniform float point_spacing = 0.01; // average distance between stored surface points
 const int CHUNK = 32768;            // must match PointCloud.CHUNK
 uniform float cloud_time = 0.0;
@@ -26,6 +29,7 @@ uniform vec3 bounds_size = vec3(2.0);
 // ---------------------------------------------------------------- appearance
 uniform float point_size = 0.02;          // world-space diameter of one point
 uniform float lod_scale = 1.0;            // > 1 when level of detail draws fewer points
+uniform float interior_scale = 1.0;       // interior dot size relative to surface dots
 uniform float min_pixel_size = 1.0;
 uniform float max_pixel_size = 48.0;
 uniform bool round_points = true;
@@ -93,6 +97,26 @@ uniform vec3 debris_gravity = vec3(0.0, -3.0, 0.0);
 uniform float heal : hint_range(0.0, 1.0) = 0.0;
 uniform bool has_debris = false;  // skip the state lookup until something was carved
 
+// Carves not yet folded into state_tex (see PointCloud.carve()). Same maths
+// as PointCloud._apply_carve(), so baking a carve changes nothing on screen.
+const float WALL_REACH = 1.7;
+uniform int carve_count = 0;
+uniform vec4 carve_a[48];  // xyz centre (rest space), w start time
+uniform vec4 carve_b[48];  // x radius, y force, z raggedness, w seed
+// How dark the inside of a hole gets (fake ambient occlusion).
+uniform float cavity_strength : hint_range(0.0, 1.0) = 0.5;
+// Directional shadow maps: dots are drawn as plain squares this much larger
+// than surface dots (closes gaps whatever the shadow map's resolution), and
+// pushed away from the light by about their radius so surfaces can't shadow
+// themselves (no acne).
+uniform float shadow_disc_scale = 2.6;
+uniform float shadow_push = 0.75;
+
+// Dots in flight (debris, dissolve, explode, mid-morph) are drawn as small
+// round beads with their own sphere-like shading instead of flat surface
+// discs. Size relative to a surface dot.
+uniform float bead_size = 0.55;
+
 // Ripple impacts: xyz = local position, w = start time (< 0 inactive).
 uniform vec4 impact_pos[8];
 // x = strength, y = speed, z = ring width, w = decay
@@ -113,6 +137,8 @@ varying float v_ysign;
 varying mat3 v_shape;    // curvature tensor S (local): dNormal = S * dPosition
 varying vec3 v_texpos;   // rest position, for the surface texture
 varying vec3 v_lnormal;  // rest normal, for triplanar blending
+varying float v_bead;    // 1 = draw as a round bead (dot in flight)
+varying float v_shadow;  // 1 = drawing into a directional shadow map
 
 // ---------------------------------------------------------------- helpers
 uint pcg_hash(uint v) {
@@ -207,15 +233,51 @@ void vertex() {
 	if (dot(n, n) < 0.01) {
 		n = vec3(0.0, 1.0, 0.0);
 	}
-	vec3 rest = texelFetch(pos_tex, tc, 0).xyz + sub_offset(n, sub, spin);
+	vec3 base = texelFetch(pos_tex, tc, 0).xyz;
+	vec3 rest = base + sub_offset(n, sub, spin);
 	vec4 c = texelFetch(col_tex, tc, 0);
 	mat3 shape = load_shape(curv_tex, tc);
 	vec3 p = rest;
 	float size_scale = 1.0;
 	float glow = 0.0;
+	float fly = 0.0; // how much this dot is "in flight" (0 = on the surface)
 	bool still = morph == 0.0 && vibrate_amplitude == 0.0 && wobble_amplitude == 0.0
 			&& explode == 0.0 && dissolve == 0.0;
 	bool at_rest = still && !use_skin;
+
+	// --- carve state: baked (state_tex) plus carves still pending on the GPU
+	vec4 st = has_debris ? texelFetch(state_tex, tc, 0) : vec4(-1.0);
+	if (st.x < 0.0) {
+		for (int i = 0; i < carve_count; i++) {
+			vec4 ca = carve_a[i];
+			vec4 cb = carve_b[i];
+			vec3 dv = base - ca.xyz;
+			float d = length(dv);
+			if (d > cb.x * WALL_REACH) {
+				continue;
+			}
+			uint key = uint(id) * 1664525u + uint(cb.w);
+			float r_eff = cb.x * (1.0 - cb.z * hash01(key));
+			if (d <= r_eff) {
+				vec3 dir = d > 1e-6 ? dv / d : vec3(0.0, 1.0, 0.0);
+				vec3 vel = (dir + rand_dir(key ^ 0x68E31DA4u) * 0.6) * cb.y * (0.4 + hash01(key + 7u));
+				st = vec4(ca.w + d / cb.x * 0.08, vel);
+				break;
+			}
+			float cav = 1.0 - smoothstep(r_eff, cb.x * WALL_REACH, d);
+			if (cav > 0.0 && -1.0 - st.x < cav) {
+				st = vec4(-1.0 - min(cav, 0.999), ca.xyz - base);
+			}
+		}
+	}
+	// Hole walls: dots around a hole face into it and darken with depth, so
+	// holes read as cavities instead of a jumble of surface normals.
+	if (st.x < -1.0) {
+		float cav = (-1.0 - st.x) * (1.0 - heal);
+		vec3 wall_n = normalize(st.yzw + vec3(1e-6));
+		n = normalize(mix(n, wall_n, cav * (on_surface ? 0.35 : 1.0)) + vec3(1e-6));
+		c.rgb *= 1.0 - cavity_strength * cav * (on_surface ? 0.4 : 1.0);
+	}
 
 	// --- skeletal animation (linear blend skinning)
 	if (use_skin) {
@@ -245,6 +307,7 @@ void vertex() {
 		vec3 tp = texelFetch(target_pos_tex, tc, 0).xyz + sub_offset(tn, sub, spin);
 		vec4 tcol = texelFetch(target_col_tex, tc, 0);
 		p = mix(p, tp, t) + rand_dir(uid * 3u + 17u) * sin(t * PI) * morph_arc;
+		fly = max(fly, sin(t * PI));
 		c = mix(c, tcol, t);
 		n = normalize(mix(n, tn, t) + vec3(1e-6));
 		mat3 tshape = load_shape(target_curv_tex, tc);
@@ -268,6 +331,7 @@ void vertex() {
 	if (explode != 0.0) {
 		vec3 d = normalize(p - explode_center + rand_dir(uid * 7u + 3u) * 0.35 + vec3(1e-5));
 		p += d * explode * (0.4 + seed * 1.2);
+		fly = max(fly, clamp(abs(explode) * 3.0, 0.0, 1.0));
 	}
 
 	// --- dissolve: points detach (randomly or as a sweeping front) and drift away
@@ -281,11 +345,11 @@ void vertex() {
 			p += (rand_dir(uid * 11u + 5u) + dissolve_drift) * dissolve_spread * a * a;
 			size_scale *= 1.0 - smoothstep(0.55, 1.0, a);
 			glow += 1.0 - smoothstep(0.0, 0.35, a);
+			fly = max(fly, smoothstep(0.0, 0.2, a));
 		}
 	}
 
 	// --- debris: points knocked off by carve(), flying on their own velocity
-	vec4 st = has_debris ? texelFetch(state_tex, tc, 0) : vec4(-1.0);
 	if (st.x >= 0.0 && cloud_time >= st.x) {
 		at_rest = false;
 		still = false;
@@ -300,6 +364,7 @@ void vertex() {
 			p += off * (1.0 - heal);
 			size_scale *= mix(1.0 - life * life, 1.0, heal);
 			glow += (1.0 - smoothstep(0.0, 0.25, life)) * (1.0 - heal);
+			fly = max(fly, 1.0 - heal);
 		}
 	}
 
@@ -332,6 +397,11 @@ void vertex() {
 		size_scale = 0.0;
 	}
 
+	if (proxy_mode && st.x < 0.0 && st.x >= -1.0) {
+		size_scale = 0.0; // intact: the proxy plane draws this part
+		p = vec3(1e9);
+	}
+
 	VERTEX = p;
 	NORMAL = n;
 
@@ -346,10 +416,22 @@ void vertex() {
 		}
 	}
 	float obj_scale = length(MODELVIEW_MATRIX[0].xyz);
-	float world_size = point_size * lod_scale * obj_scale * size_scale * (splats ? splat_scale : 1.0);
+	float disc_size = point_size * lod_scale * (splats ? splat_scale : 1.0) * (on_surface ? 1.0 : interior_scale);
+	// Beads in flight are smaller and don't grow much with level of detail.
+	float bead_world = point_size * min(lod_scale, 1.6) * bead_size;
+	float world_size = mix(disc_size, bead_world, fly) * obj_scale * size_scale;
+	bool shadow_pass = PROJECTION_MATRIX[3][3] > 0.5; // orthographic = directional shadow map
+	if (shadow_pass) {
+		world_size *= shadow_disc_scale;
+		// Push away from the light (view -z) by about the dot's radius.
+		VERTEX += transpose(mat3(MODELVIEW_MATRIX)) * vec3(0.0, 0.0, -world_size * shadow_push)
+				/ max(obj_scale * obj_scale, 1e-8);
+		vp = MODELVIEW_MATRIX * vec4(VERTEX, 1.0);
+	}
+	bool bead = fly > 0.5;
 	// A tilted disc can poke slightly past a sprite of its own diameter, so
 	// splat sprites are drawn a bit bigger than the disc.
-	float sprite_size = world_size * (splats ? 1.2 : 1.0);
+	float sprite_size = world_size * (splats && !bead ? 1.2 : 1.0);
 	// abs(): the Compatibility renderer flips Y (negative [1][1]) when
 	// rendering to a texture.
 	float px = sprite_size * abs(PROJECTION_MATRIX[1][1]) * 0.5 * VIEWPORT_SIZE.y;
@@ -367,7 +449,9 @@ void vertex() {
 	v_center = vp.xyz;
 	v_vnormal = normalize(mat3(MODELVIEW_MATRIX) * n);
 	v_local = p;
-	v_flags = (ortho ? 1.0 : 0.0) + (clip_to_bounds && at_rest ? 2.0 : 0.0);
+	v_flags = (ortho ? 1.0 : 0.0) + (clip_to_bounds && at_rest && fly == 0.0 ? 2.0 : 0.0);
+	v_bead = bead ? 1.0 : 0.0;
+	v_shadow = shadow_pass ? 1.0 : 0.0;
 	v_ysign = PROJECTION_MATRIX[1][1] < 0.0 ? -1.0 : 1.0;
 	v_shape = shape;
 	v_texpos = rest;
@@ -389,7 +473,19 @@ void fragment() {
 	mat3 mv = mat3(VIEW_MATRIX) * mat3(MODEL_MATRIX); // rotation * uniform scale
 	float mv_scale = length(mv[0]);
 	float grazing = 1.0;
-	if (splats) {
+	if (v_shadow > 0.5) {
+		// Shadow map: plain square, flat depth (see shadow_disc_scale).
+	} else if (v_bead > 0.5) {
+		// A tiny lit sphere: round, with a hemisphere normal, so flying dots
+		// look like beads of material rather than flat flakes.
+		float r2 = dot(pc, pc);
+		if (r2 > 1.0) {
+			discard;
+		}
+		vec3 bn = vec3(pc.x, -pc.y * v_ysign, sqrt(1.0 - r2));
+		NORMAL = normalize(bn);
+		hit = v_center + bn * v_radius;
+	} else if (splats) {
 		// Intersect this pixel's view ray with the dot's tangent-plane disc.
 		vec3 ro = ortho ? vec3(q.xy, 0.0) : vec3(0.0);
 		vec3 rd = ortho ? vec3(0.0, 0.0, -1.0) : normalize(q);

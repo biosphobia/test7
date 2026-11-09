@@ -1,9 +1,15 @@
 class_name PointPlayer
 extends CharacterBody3D
-## Third-person player whose whole body is made of point clouds.
+## First-person player whose whole body is made of point clouds.
 ##
 ## Torso + head are one cloud built by merging several sampled shapes; arms and
-## legs are separate clouds swung from code while walking.
+## legs are separate clouds swung from code while walking. The body is on a
+## render layer the player's own camera doesn't draw (it would block the
+## view), but it still casts a shadow, so you can see yourself on the ground.
+
+## Render layer of the player's own body (hidden from the first-person camera).
+const BODY_LAYER := 1 << 1
+const EYE_HEIGHT := 1.65
 
 @export var walk_speed := 5.0
 @export var sprint_speed := 9.0
@@ -18,7 +24,8 @@ var limbs: Array[Node3D] = []   # pivots: left leg, right leg, left arm, right a
 var _cam_pivot: Node3D
 var _gravity: float = ProjectSettings.get_setting("physics/3d/default_gravity")
 var _yaw := 0.0
-var _pitch := -0.2
+var _pitch := 0.0
+var _bob := 0.0
 var _walk_phase := 0.0
 
 
@@ -37,19 +44,18 @@ func _ready() -> void:
 	_build_body()
 
 	_cam_pivot = Node3D.new()
-	_cam_pivot.position.y = 1.6
+	_cam_pivot.position.y = EYE_HEIGHT
 	add_child(_cam_pivot)
-	var arm := SpringArm3D.new()
-	arm.spring_length = 4.2
-	arm.margin = 0.2
-	arm.position.x = 0.7
-	arm.add_excluded_object(get_rid())
-	_cam_pivot.add_child(arm)
 	camera = Camera3D.new()
-	camera.fov = 70.0
+	camera.fov = 75.0
+	camera.near = 0.05
 	camera.far = 300.0
-	arm.add_child(camera)
+	camera.cull_mask = 0xFFFFF & ~BODY_LAYER
+	_cam_pivot.add_child(camera)
 	camera.current = true
+	for c in visual.find_children("*", "", true, false):
+		if c is VisualInstance3D:
+			(c as VisualInstance3D).layers = BODY_LAYER
 
 
 func _build_body() -> void:
@@ -96,11 +102,12 @@ func _build_body() -> void:
 func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventMouseMotion and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
 		_yaw -= event.relative.x * mouse_sensitivity
-		_pitch = clampf(_pitch - event.relative.y * mouse_sensitivity, -1.2, 0.9)
+		_pitch = clampf(_pitch - event.relative.y * mouse_sensitivity, -1.45, 1.45)
 
 
 func _physics_process(delta: float) -> void:
 	_cam_pivot.rotation = Vector3(_pitch, _yaw, 0)
+	visual.rotation.y = _yaw + PI  # the body faces where you look
 
 	if not is_on_floor():
 		velocity.y -= _gravity * delta
@@ -115,11 +122,11 @@ func _physics_process(delta: float) -> void:
 	velocity.z = move_toward(velocity.z, dir.z * speed, speed * 8.0 * delta)
 	move_and_slide()
 
-	# Face the movement direction.
 	var flat := Vector2(velocity.x, velocity.z)
-	if flat.length() > 0.2:
-		var target_yaw := atan2(velocity.x, velocity.z)
-		visual.rotation.y = lerp_angle(visual.rotation.y, target_yaw, 1.0 - exp(-12.0 * delta))
+	# Gentle head bob while walking.
+	if is_on_floor() and flat.length() > 0.5:
+		_bob += delta * flat.length() * 1.6
+	_cam_pivot.position.y = lerpf(_cam_pivot.position.y, EYE_HEIGHT + sin(_bob * 2.0) * 0.035 * minf(flat.length() / walk_speed, 1.0), 0.3)
 
 	# Walk cycle by rotating limb pivots.
 	var moving := clampf(flat.length() / walk_speed, 0.0, 1.5)

@@ -34,8 +34,48 @@ enum Fill {
 
 
 static func from_mesh(mesh: Mesh, count: int, opts: Dictionary = {}) -> PointCloudData:
-	var out := PointCloudData.new()
 	if mesh == null or count <= 0:
+		return PointCloudData.new()
+	return from_snapshot(snapshot(mesh, opts.get("materials", [])), count, opts)
+
+
+## Copies everything sampling needs out of a mesh: vertex arrays, material
+## colours and albedo images. Reading meshes and textures talks to the
+## RenderingServer, so call this on the main thread; the snapshot can then be
+## sampled with from_snapshot() on any thread (e.g. a worker, without stalls).
+static func snapshot(mesh: Mesh, materials: Array = []) -> Dictionary:
+	var surfaces := []
+	for s in mesh.get_surface_count():
+		var mat: Material = materials[s] if s < materials.size() else null
+		if mat == null:
+			mat = mesh.surface_get_material(s)
+		var info := {"albedo": Color.WHITE, "image": null, "uv_scale": Vector2.ONE,
+			"uv_offset": Vector2.ZERO, "vcol": mat == null, "arrays": []}
+		if mat is BaseMaterial3D:
+			var bm := mat as BaseMaterial3D
+			info["albedo"] = bm.albedo_color
+			info["vcol"] = bm.vertex_color_use_as_albedo
+			info["image"] = _readable_image(bm.albedo_texture)
+			info["uv_scale"] = Vector2(bm.uv1_scale.x, bm.uv1_scale.y)
+			info["uv_offset"] = Vector2(bm.uv1_offset.x, bm.uv1_offset.y)
+		elif mat is ShaderMaterial:
+			var sm := mat as ShaderMaterial
+			var a = sm.get_shader_parameter("albedo")
+			if a is Color:
+				info["albedo"] = a
+			var t = sm.get_shader_parameter("texture_albedo")
+			if t is Texture2D:
+				info["image"] = _readable_image(t)
+		if not (mesh is ArrayMesh and (mesh as ArrayMesh).surface_get_primitive_type(s) != Mesh.PRIMITIVE_TRIANGLES):
+			info["arrays"] = mesh.surface_get_arrays(s)
+		surfaces.append(info)
+	return {"surfaces": surfaces, "aabb": mesh.get_aabb()}
+
+
+## Samples a snapshot() of a mesh. Pure data work: safe on worker threads.
+static func from_snapshot(snap: Dictionary, count: int, opts: Dictionary = {}) -> PointCloudData:
+	var out := PointCloudData.new()
+	if count <= 0:
 		return out
 
 	var rng := RandomNumberGenerator.new()
@@ -45,7 +85,6 @@ static func from_mesh(mesh: Mesh, count: int, opts: Dictionary = {}) -> PointClo
 	if fill == Fill.SURFACE:
 		fill_fraction = 0.0
 	var thickness: float = opts.get("thickness", 0.1)
-	var materials: Array = opts.get("materials", [])
 	var has_override := opts.has("color")
 	var override_color: Color = opts.get("color", Color.WHITE)
 	var color_fn: Callable = opts.get("color_fn", Callable())
@@ -67,39 +106,17 @@ static func from_mesh(mesh: Mesh, count: int, opts: Dictionary = {}) -> PointClo
 	var surf_vcol: Array[bool] = []
 	var any_bones := false
 
-	for s in mesh.get_surface_count():
-		var mat: Material = materials[s] if s < materials.size() else null
-		if mat == null:
-			mat = mesh.surface_get_material(s)
-		var albedo := Color.WHITE
-		var img: Image = null
-		var uv_scale := Vector2.ONE
-		var uv_offset := Vector2.ZERO
-		var vcol := mat == null
-		if mat is BaseMaterial3D:
-			var bm := mat as BaseMaterial3D
-			albedo = bm.albedo_color
-			vcol = bm.vertex_color_use_as_albedo
-			img = _readable_image(bm.albedo_texture)
-			uv_scale = Vector2(bm.uv1_scale.x, bm.uv1_scale.y)
-			uv_offset = Vector2(bm.uv1_offset.x, bm.uv1_offset.y)
-		elif mat is ShaderMaterial:
-			var sm := mat as ShaderMaterial
-			var a = sm.get_shader_parameter("albedo")
-			if a is Color:
-				albedo = a
-			var t = sm.get_shader_parameter("texture_albedo")
-			if t is Texture2D:
-				img = _readable_image(t)
-		surf_color.append(albedo)
-		surf_image.append(img)
-		surf_uv_scale.append(uv_scale)
-		surf_uv_offset.append(uv_offset)
-		surf_vcol.append(vcol)
-
-		if mesh is ArrayMesh and (mesh as ArrayMesh).surface_get_primitive_type(s) != Mesh.PRIMITIVE_TRIANGLES:
+	var snap_surfaces: Array = snap["surfaces"]
+	for s in snap_surfaces.size():
+		var info: Dictionary = snap_surfaces[s]
+		surf_color.append(info["albedo"])
+		surf_image.append(info["image"])
+		surf_uv_scale.append(info["uv_scale"])
+		surf_uv_offset.append(info["uv_offset"])
+		surf_vcol.append(info["vcol"])
+		var arr: Array = info["arrays"]
+		if arr.is_empty():
 			continue
-		var arr := mesh.surface_get_arrays(s)
 		var sv: PackedVector3Array = arr[Mesh.ARRAY_VERTEX]
 		var nv := sv.size()
 		if nv == 0:
@@ -181,7 +198,7 @@ static func from_mesh(mesh: Mesh, count: int, opts: Dictionary = {}) -> PointClo
 		cum[t] = total
 	if total <= 0.0:
 		return out
-	var center := mesh.get_aabb().get_center()
+	var center: Vector3 = (snap["aabb"] as AABB).get_center()
 
 	# ---- Scatter.
 	# Triangles are chosen stratified (each gets its fair share of points) and
@@ -312,6 +329,10 @@ static func from_mesh(mesh: Mesh, count: int, opts: Dictionary = {}) -> PointClo
 				var dist := (p - center).length()
 				var max_scale := maxf(0.0, 1.0 - skin_gap / maxf(dist, 1e-6))
 				p = center + (p - center) * pow(rng.randf(), 1.0 / 3.0) * max_scale
+				# Radial normal: exposed interior shades smoothly instead of
+				# carrying the normal of whichever face the point came from.
+				if (p - center).length_squared() > 1e-10:
+					n = (p - center).normalized()
 			else:
 				p -= n * lerpf(minf(skin_gap, thickness), thickness, rng.randf())
 		if use_fn:
@@ -337,12 +358,23 @@ static func from_mesh(mesh: Mesh, count: int, opts: Dictionary = {}) -> PointClo
 
 	out.suggested_point_size = sqrt(total / maxf(1.0, n_surface)) * SIZE_FACTOR
 	out.surface_count = n_surface
+	if n_inside > 0:
+		# Interior points fill a volume; size their dots for their own spacing
+		# so a cut through the model (a hole) looks like solid material.
+		var volume := total * thickness
+		if fill == Fill.SOLID:
+			var mean_r := 0.0
+			for i in mini(n_surface, 512):
+				mean_r += out.positions[i].distance_to(center)
+			volume = total * (mean_r / maxf(mini(n_surface, 512), 1)) / 3.0  # cone-volume estimate
+		out.interior_point_size = pow(volume / n_inside, 1.0 / 3.0) * 1.1
 
 	if opts.has("transform"):
 		var xf: Transform3D = opts["transform"]
 		out.positions = xf * out.positions
 		out.normals = Transform3D(xf.basis.orthonormalized(), Vector3.ZERO) * out.normals
 		out.suggested_point_size *= xf.basis.get_scale().x
+		out.interior_point_size *= xf.basis.get_scale().x
 		out.curvatures = PointCloudData.transformed_tensors(out.curvatures, xf.basis)
 	out.recompute_aabb()
 	return out
@@ -398,13 +430,23 @@ static func box(size: Vector3, count: int, opts: Dictionary = {}) -> PointCloudD
 
 
 static func sphere(radius: float, count: int, opts: Dictionary = {}) -> PointCloudData:
+	return sphere_from_snapshot(snapshot(sphere_mesh(radius)), radius, count, opts)
+
+
+static func sphere_mesh(radius: float) -> SphereMesh:
 	var m := SphereMesh.new()
 	m.radius = radius
 	m.height = radius * 2.0
 	m.radial_segments = 48
 	m.rings = 24
+	return m
+
+
+## sphere() for worker threads: take the snapshot of sphere_mesh(radius) on
+## the main thread first.
+static func sphere_from_snapshot(snap: Dictionary, radius: float, count: int, opts: Dictionary = {}) -> PointCloudData:
 	var o := _with(opts, {"fill": Fill.SOLID})
-	var data := from_mesh(m, count, o)
+	var data := from_snapshot(snap, count, o)
 	# Snap surface points onto the true sphere so no facets show.
 	var p := data.positions
 	var nrm := data.normals
