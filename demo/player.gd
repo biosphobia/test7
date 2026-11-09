@@ -58,9 +58,9 @@ func _build_body() -> void:
 	var glow := Color(0.2, 0.95, 1.0)
 
 	# Torso + head + visor + backpack merged into one cloud.
-	var d := PointSampler.capsule(0.3, 0.95, 50000, {"color_fn": func(p: Vector3, _n, _c, _in) -> Color:
+	var d := PointSampler.capsule(0.3, 0.95, 80000, {"color_fn": func(p: Vector3, _n, _c, _in) -> Color:
 		return dark if absf(p.y) > 0.3 or absf(p.x) > 0.24 else suit})
-	var head := PointSampler.sphere(0.22, 22000, {"color": suit})
+	var head := PointSampler.sphere(0.22, 35000, {"color": suit})
 	d.merge(head, Transform3D(Basis(), Vector3(0, 0.68, 0)))
 	var visor := PointSampler.box(Vector3(0.3, 0.09, 0.08), 6000, {"color": glow})
 	d.merge(visor, Transform3D(Basis(), Vector3(0, 0.71, 0.18)))
@@ -86,7 +86,7 @@ func _build_body() -> void:
 		visual.add_child(pivot)
 		var limb := PointCloud.new()
 		limb.name = ["LegL", "LegR", "ArmL", "ArmR"][i]
-		limb.data = PointSampler.capsule(specs[i][1], specs[i][2], 12000, {"color_fn": func(p: Vector3, _n, _c, _in) -> Color:
+		limb.data = PointSampler.capsule(specs[i][1], specs[i][2], 20000, {"color_fn": func(p: Vector3, _n, _c, _in) -> Color:
 			return dark if p.y < -0.25 else suit})
 		limb.position.y = -specs[i][2] * 0.5 + 0.05
 		pivot.add_child(limb)

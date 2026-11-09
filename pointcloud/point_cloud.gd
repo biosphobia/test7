@@ -24,7 +24,12 @@ const TEX_WIDTH := 2048
 const MAX_IMPACTS := 8
 const DEFAULT_SHADER := preload("res://pointcloud/point_cloud.gdshader")
 
-static var _clock_origin: int = Time.get_ticks_usec()
+## Dots are drawn in instanced batches of this many points, so a cloud of
+## any size costs one small shared vertex buffer.
+const CHUNK := 32768
+
+static var _clock := 0.0
+static var _clock_frame := -1
 
 ## The points. Assigning new data re-uploads everything to the GPU.
 @export var data: PointCloudData:
@@ -45,6 +50,18 @@ static var _clock_origin: int = Time.get_ticks_usec()
 @export_tool_button("Sample source mesh", "PointMesh") var _sample_button := sample_source_mesh
 
 @export_group("Appearance")
+## Dots drawn per stored point. Each stored point becomes a small cluster of
+## dots spread evenly over its patch of surface; every dot has its own random
+## seed, so it shivers, dissolves and flies off as debris on its own. Raising
+## this makes surfaces finer and more seamless without making sampling, memory
+## or carving any slower; the GPU cost grows with stored points × density.
+@export_range(1, 16) var density := 1:
+	set(v):
+		density = clampi(v, 1, 64)
+		_sp(&"density", density)
+		_update_point_size()
+		if data and data.size() > 0:
+			_build_mesh(data.size())
 ## World-space diameter of each point. 0 = use the data's suggested size.
 @export var point_size := 0.0:
 	set(v):
@@ -198,6 +215,7 @@ static var _clock_origin: int = Time.get_ticks_usec()
 
 var _mat: ShaderMaterial
 var _mesh: ArrayMesh
+var _multimesh: MultiMesh
 var _mesh_count := -1
 var _tex_h := 1
 var _pos_tex: ImageTexture
@@ -233,9 +251,11 @@ var _grid_job: _GridJob
 var _pending: Array[Callable] = []
 
 
-## Seconds since startup on the clock shared by all clouds and their shaders.
+## Seconds on the clock shared by all clouds and their shaders. It follows
+## game time (process delta), so it respects Engine.time_scale, stops while
+## paused and stays in sync in Movie Maker mode.
 static func now() -> float:
-	return float(Time.get_ticks_usec() - _clock_origin) / 1000000.0
+	return _clock
 
 
 func _init() -> void:
@@ -253,7 +273,7 @@ func _init() -> void:
 			&"wobble_amplitude", &"wobble_frequency", &"wobble_speed", &"explode", &"explode_center",
 			&"dissolve", &"dissolve_direction", &"dissolve_directional", &"dissolve_spread",
 			&"dissolve_drift", &"dissolve_edge_color", &"glow_strength", &"morph", &"morph_stagger",
-			&"morph_arc", &"debris_lifetime", &"debris_gravity"]:
+			&"morph_arc", &"debris_lifetime", &"debris_gravity", &"density"]:
 		_sp(p, get(p))
 
 
@@ -268,7 +288,11 @@ func _ready() -> void:
 		bind_skeleton(skeleton, skin)
 
 
-func _process(_delta: float) -> void:
+func _process(delta: float) -> void:
+	var frame := Engine.get_process_frames()
+	if frame != _clock_frame:
+		_clock_frame = frame
+		_clock += delta
 	_sp(&"cloud_time", now())
 	_poll_grid_task()
 	if _state_dirty:
@@ -352,9 +376,14 @@ func _sample_source() -> PointCloudData:
 
 # ============================================================== editing
 
-## Number of points.
+## Number of stored points (entries in `data`).
 func get_point_count() -> int:
 	return data.size() if data else 0
+
+
+## Number of dots drawn (stored points × density).
+func get_dot_count() -> int:
+	return get_point_count() * density
 
 
 ## Re-uploads all point data after you changed `data` arrays from code.
@@ -594,7 +623,6 @@ func _rebuild(keep_state: bool) -> void:
 	var n := data.size() if data else 0
 	if n == 0:
 		set_base(RID())
-		_mesh = null
 		_mesh_count = -1
 		return
 	_tex_h = maxi(1, ceili(float(n) / TEX_WIDTH))
@@ -630,6 +658,9 @@ func _rebuild(keep_state: bool) -> void:
 		_sp(&"bone_wgt_tex", _bwgt_tex)
 	_sp(&"use_skin", data.is_skinned() and _skin_in_use != null)
 
+	# Average distance between neighbouring surface points; sub-dots spread
+	# over a disk of about this size.
+	_sp(&"point_spacing", data.suggested_point_size / PointSampler.SIZE_FACTOR)
 	_sp(&"bounds_min", data.aabb.position)
 	_sp(&"bounds_size", data.aabb.size)
 	_update_point_size()
@@ -639,15 +670,38 @@ func _rebuild(keep_state: bool) -> void:
 
 
 func _build_mesh(n: int) -> void:
-	var arrays := []
-	arrays.resize(Mesh.ARRAY_MAX)
-	var verts := PackedVector3Array()
-	verts.resize(n)
-	arrays[Mesh.ARRAY_VERTEX] = verts
-	_mesh = ArrayMesh.new()
-	_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_POINTS, arrays)
+	# One shared batch of CHUNK dummy points, instanced as often as needed.
+	# The shader finds its dot from INSTANCE_ID * CHUNK + VERTEX_ID.
+	if _mesh == null:
+		_mesh = _shared_chunk_mesh()
+	if _multimesh == null:
+		_multimesh = MultiMesh.new()
+		_multimesh.transform_format = MultiMesh.TRANSFORM_3D
+		_multimesh.mesh = _mesh
+	var dots := n * density
+	var instances := ceili(float(dots) / CHUNK)
+	if _multimesh.instance_count != instances:
+		_multimesh.instance_count = instances
+		for i in instances:
+			_multimesh.set_instance_transform(i, Transform3D.IDENTITY)
 	_mesh_count = n
-	set_base(_mesh.get_rid())
+	_sp(&"dot_count", dots)
+	_update_aabb()
+	set_base(_multimesh.get_rid())
+
+
+static var _chunk_mesh: ArrayMesh
+
+static func _shared_chunk_mesh() -> ArrayMesh:
+	if _chunk_mesh == null:
+		var arrays := []
+		arrays.resize(Mesh.ARRAY_MAX)
+		var verts := PackedVector3Array()
+		verts.resize(CHUNK)
+		arrays[Mesh.ARRAY_VERTEX] = verts
+		_chunk_mesh = ArrayMesh.new()
+		_chunk_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_POINTS, arrays)
+	return _chunk_mesh
 
 
 func _update_aabb() -> void:
@@ -656,15 +710,17 @@ func _update_aabb() -> void:
 
 
 func _set_custom_aabb(box: AABB) -> void:
-	if _mesh:
-		_mesh.custom_aabb = box.grow(cull_margin)
+	if _multimesh:
+		_multimesh.custom_aabb = box.grow(cull_margin)
 
 
 func _update_point_size() -> void:
 	var s := point_size
 	if s <= 0.0:
 		s = data.suggested_point_size if data else 0.02
-	_sp(&"point_size", s * point_size_multiplier)
+	# Sub-dots share the stored point's area, so each one is smaller.
+	var dot := s / sqrt(float(density)) * (1.0 if density == 1 else 1.3)
+	_sp(&"point_size", dot * point_size_multiplier)
 
 
 func _reset_state() -> void:

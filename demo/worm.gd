@@ -45,7 +45,7 @@ func _ready() -> void:
 	skeleton.add_child(mi)
 	mi.skeleton = NodePath("..")
 
-	cloud = PointCloud.from_mesh_instance(mi, 180000, {
+	cloud = PointCloud.from_mesh_instance(mi, 250000, {
 		"fill": PointSampler.Fill.SHELL, "fill_fraction": 0.3, "thickness": 0.18,
 	})
 	cloud.cull_margin = LENGTH

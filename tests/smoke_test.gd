@@ -4,11 +4,17 @@ extends Node3D
 
 var frames := 0
 var shot_path := "user://smoke.png"
+var density := 1
+var cam_dist := 5.5
 
 func _ready() -> void:
 	for a in OS.get_cmdline_user_args():
 		if a.begins_with("--shot="):
 			shot_path = a.substr(7)
+		elif a.begins_with("--density="):
+			density = int(a.substr(10))
+		elif a.begins_with("--dist="):
+			cam_dist = float(a.substr(7))
 	var t0 := Time.get_ticks_msec()
 	var cube := PointCloud.new()
 	cube.data = PointSampler.box(Vector3(2, 2, 2), 300000, {"color": Color(1.0, 0.55, 0.2)})
@@ -31,7 +37,7 @@ func _ready() -> void:
 	add_child(tor)
 
 	var cam := Camera3D.new()
-	cam.position = Vector3(0, 1.5, 5.5)
+	cam.position = Vector3(0, 1.5, 5.5).normalized() * cam_dist
 	add_child(cam)
 	cam.look_at(Vector3.ZERO)
 	var sun := DirectionalLight3D.new()
@@ -52,6 +58,8 @@ func _ready() -> void:
 	var m := PointSampler.match_order(cube.data, sph.data)
 	print("match_order 300k: ", Time.get_ticks_msec() - t0, " ms")
 
+	for c in [cube, sph, tor]:
+		c.density = density
 	cube.carve(cube.to_global(Vector3(0.5, 1.0, 1.0)), 0.6, 1.0)
 	sph.vibrate_amplitude = 0.01
 

@@ -28,12 +28,13 @@ Open the folder in **Godot 4.4 or newer** and press Play (`demo/main.tscn`).
 | F | explode pulse |
 | V / G | toggle vibrate / wobble |
 | H | heal: carved-off points fly back into place |
+| [ / ] | halve / double the dots per point on the aimed object (1–16) |
 | R | restore everything instantly |
 | Esc | free the mouse (click to recapture) |
 
-The scene holds about 2.8 million points: ground, a morphing cube, a textured
-crate, monoliths, a jelly orb, the player and a skinned worm enemy that crawls
-around. Shoot the worm 15 times and it dissolves, then reassembles.
+The scene holds about 3.6 million stored points drawn as about 10.8 million
+dots: ground, a morphing cube, a textured crate, monoliths, a jelly orb, the
+player and a skinned worm enemy that crawls around. Shoot the worm 15 times and it dissolves, then reassembles.
 
 ## How it works
 
@@ -44,16 +45,26 @@ PointSampler    (static)       mesh → points: area-weighted, takes colour from
       │  drawn by                 albedo/texture/vertex colours, copies skin weights
 PointCloud      (GeometryInstance3D)
       │  uploads data to float textures, one texel per point
-point_cloud.gdshader           vertex shader reads its point via VERTEX_ID and applies
-                               skinning, morph, effects, debris, ripples; outputs a
-                               GL point sized in world units
+point_cloud.gdshader           draws `density` dots per point; each dot finds its point,
+                               applies skinning, morph, effects, debris, ripples and
+                               outputs a GL point sized in world units
 ```
 
-* **Rendering.** The drawn mesh is N dummy vertices with `PRIMITIVE_POINTS`.
-  The shader looks up each point's data and sets `POINT_SIZE` so the point keeps
-  a constant world size. The sampler picks a size from the point density, so
-  surfaces close up and look solid. Points are opaque and lit (or `unshaded`),
-  write depth and cast shadows like normal geometry.
+* **Rendering.** One shared batch of 32,768 dummy points (`PRIMITIVE_POINTS`) is
+  drawn instanced as many times as needed. Each dot works out its index from
+  `INSTANCE_ID` and `VERTEX_ID`, looks up its data and sets `POINT_SIZE` so it
+  keeps a constant world size. Memory doesn't grow with the dot count. Dots are
+  opaque and lit (or `unshaded`), write depth and cast shadows like normal
+  geometry.
+* **Seamless surfaces.** The sampler spreads points evenly (stratified per
+  triangle plus an R2 low-discrepancy sequence) instead of randomly, and picks
+  a dot size that just closes the gaps. Interior points stay a few dot-widths
+  below the surface so they can't show through.
+* **Density: more dots for free.** `PointCloud.density` draws N dots per stored
+  point, spread over that point's patch of surface (a golden-angle spiral in
+  the tangent plane). Every dot has its own seed, so effects and debris act on
+  each dot separately. Sampling time, CPU memory and carve cost stay the same:
+  a 400k-point cube at density 4 is 1.6M independently moving dots.
 * **Effects cost no CPU.** Vibrate, wobble, explode, dissolve, morph and ripples
   are shader uniforms. Every point gets a stable random seed from a hash of its
   index, which is what makes the motion look per-point.
@@ -92,6 +103,7 @@ cube.carve(hit_position, 0.4)          # chip a hole; points fly off
 cube.impact(hit_position)              # ripple through the surface
 cube.paint(hit_position, 0.5, Color.RED)
 cube.heal(1.5)
+cube.density = 8                       # 8 dots per stored point: finer, more seamless
 
 # Edit individual points from code
 var p := cube.data.positions
@@ -110,8 +122,9 @@ preview live in the editor.
 
 Edit `custom_effect()` in `pointcloud/point_cloud.gdshader`. If you want
 different effects on different objects, copy the shader and assign the copy to
-`PointCloud.shader_override`. The function receives each point's position,
-normal, colour, size, rest position, random seed, index and the time. Anything
+`PointCloud.shader_override`. The function receives each dot's position,
+normal, colour, size, rest position, random seed, its stored point's index,
+which of that point's dots it is (`sub`), and the time. Anything
 you can write in GLSL runs on every point every frame.
 
 ## Files
@@ -124,12 +137,25 @@ you can write in GLSL runs on every point every frame.
 | `pointcloud/point_cloud_data.gd` | `PointCloudData` resource |
 | `pointcloud/point_grid.gd` | spatial grid for carve/paint queries |
 | `demo/` | the playable sandbox (player, worm enemy, props) |
-| `tests/` | `smoke_test.tscn` / `demo_capture.tscn` render screenshots headlessly |
+| `tests/` | `smoke_test.tscn` / `demo_capture.tscn` render screenshots headlessly; `demo_video.tscn` is a scripted showcase for Movie Maker |
+
+## Recording a video
+
+```sh
+godot --path . --write-movie out.avi --fixed-fps 30 res://tests/demo_video.tscn
+```
+
+Movie Maker renders at a fixed frame rate however slow the machine is. The
+point clouds' clock follows game time (`PointCloud.now()`), so all effects
+stay in sync in the recording.
 
 ## Performance notes and limits
 
-* GPU cost scales with the total point count. A few million points are
-  comfortable on a desktop GPU. Points beyond the camera's culling bounds are
+* GPU cost scales with the total dot count (stored points × density). Ten
+  million dots or so should be fine on a desktop GPU; lower `density` for
+  weaker hardware. Shadow-casting clouds are drawn again for each shadow
+  cascade, so switch `cast_shadow` off where shadows aren't visible (the demo
+  does this for the ground). Points beyond the camera's culling bounds are
   free, because each cloud is culled as a whole.
 * Sampling runs in GDScript at roughly 1 µs per point, so 300k points take about
   0.3 s. For big clouds, bake once and save the `.res` file.

@@ -18,6 +18,10 @@ uniform sampler2D col_tex : filter_nearest, repeat_disable;   // rgba = sRGB col
 uniform sampler2D nrm_tex : filter_nearest, repeat_disable;   // xyz = normal (RGB32F)
 uniform sampler2D state_tex : filter_nearest, repeat_disable; // x = detach time (<0 attached), yzw = velocity
 uniform int tex_width = 2048;
+uniform int density = 1;            // dots drawn per stored point
+uniform int dot_count = 0;          // stored points * density
+uniform float point_spacing = 0.01; // average distance between stored surface points
+const int CHUNK = 32768;            // must match PointCloud.CHUNK
 uniform float cloud_time = 0.0;
 uniform vec3 bounds_min = vec3(-1.0);
 uniform vec3 bounds_size = vec3(2.0);
@@ -119,34 +123,56 @@ void accum_bone(float bone, float w, vec3 p, vec3 n, inout vec3 sp, inout vec3 s
 	sn += vec3(dot(r0.xyz, n), dot(r1.xyz, n), dot(r2.xyz, n)) * w;
 }
 
+// Spreads the dots of one stored point evenly (golden-angle spiral) over a
+// disk of the point's surface area, lying in the tangent plane.
+vec3 sub_offset(vec3 n, int sub, float spin) {
+	if (density <= 1) {
+		return vec3(0.0);
+	}
+	vec3 t = normalize(abs(n.y) < 0.99 ? cross(n, vec3(0.0, 1.0, 0.0)) : cross(n, vec3(1.0, 0.0, 0.0)));
+	vec3 b = cross(n, t);
+	float r = sqrt((float(sub) + 0.5) / float(density)) * point_spacing * 0.6;
+	float a = float(sub) * 2.39996323 + spin * TAU;
+	return (t * cos(a) + b * sin(a)) * r;
+}
+
 // ---------------------------------------------------------------- your hook
-// Runs for every point, every frame, after all built-in effects.
+// Runs for every dot, every frame, after all built-in effects.
 //   p          position in the cloud's local space (writable)
 //   n          normal (writable)
 //   c          sRGB colour, alpha unused (writable)
-//   size_scale multiply to grow/shrink the point, <= 0.02 hides it
-//   rest       the point's undeformed rest position
-//   seed       stable random number in [0, 1] for this point
-//   id         point index
+//   size_scale multiply to grow/shrink the dot, <= 0.02 hides it
+//   rest       the dot's undeformed rest position
+//   seed       stable random number in [0, 1] for this dot
+//   id         index of the stored point (PointCloudData) this dot belongs to
+//   sub        which of that point's `density` dots this is
 void custom_effect(inout vec3 p, inout vec3 n, inout vec4 c, inout float size_scale,
-		vec3 rest, float seed, int id, float t) {
+		vec3 rest, float seed, int id, int sub, float t) {
 	// Example: uncomment for a twisting effect.
 	// float a = rest.y * 0.8 * sin(t);
 	// p.xz = mat2(vec2(cos(a), sin(a)), vec2(-sin(a), cos(a))) * p.xz;
 }
 
 void vertex() {
-	int id = VERTEX_ID;
-	uint uid = uint(id);
+	// Which dot am I? Dots are drawn as instanced batches of CHUNK points.
+	int gid = INSTANCE_ID * CHUNK + VERTEX_ID;
+	bool padding = gid >= dot_count; // unused tail of the last batch
+	if (padding) {
+		gid = 0;
+	}
+	int id = gid / density;   // stored point
+	int sub = gid % density;  // dot within that point
+	uint uid = uint(gid);
 	ivec2 tc = ivec2(id % tex_width, id / tex_width);
 	float seed = hash01(uid);
+	float spin = hash01(uint(id) * 7919u + 13u);
 
-	vec3 rest = texelFetch(pos_tex, tc, 0).xyz;
-	vec4 c = texelFetch(col_tex, tc, 0);
 	vec3 n = texelFetch(nrm_tex, tc, 0).xyz;
 	if (dot(n, n) < 0.01) {
 		n = vec3(0.0, 1.0, 0.0);
 	}
+	vec3 rest = texelFetch(pos_tex, tc, 0).xyz + sub_offset(n, sub, spin);
+	vec4 c = texelFetch(col_tex, tc, 0);
 	vec3 p = rest;
 	float size_scale = 1.0;
 	float glow = 0.0;
@@ -172,9 +198,12 @@ void vertex() {
 	if (morph > 0.0) {
 		float t = clamp((morph - seed * morph_stagger) / (1.0 - morph_stagger), 0.0, 1.0);
 		t = t * t * (3.0 - 2.0 * t);
-		vec3 tp = texelFetch(target_pos_tex, tc, 0).xyz;
-		vec4 tcol = texelFetch(target_col_tex, tc, 0);
 		vec3 tn = texelFetch(target_nrm_tex, tc, 0).xyz;
+		if (dot(tn, tn) < 0.01) {
+			tn = vec3(0.0, 1.0, 0.0);
+		}
+		vec3 tp = texelFetch(target_pos_tex, tc, 0).xyz + sub_offset(tn, sub, spin);
+		vec4 tcol = texelFetch(target_col_tex, tc, 0);
 		p = mix(p, tp, t) + rand_dir(uid * 3u + 17u) * sin(t * PI) * morph_arc;
 		c = mix(c, tcol, t);
 		n = normalize(mix(n, tn, t) + vec3(1e-6));
@@ -219,7 +248,9 @@ void vertex() {
 		float dt = max(cloud_time - st.x, 0.0);
 		if (cloud_time >= st.x) {
 			float life = clamp(dt / debris_lifetime, 0.0, 1.0);
-			vec3 off = st.yzw * dt + 0.5 * debris_gravity * dt * dt;
+			// Dots of one point share its velocity but scatter a little.
+			vec3 vel = st.yzw + rand_dir(uid * 13u + 9u) * length(st.yzw) * 0.35 * float(min(density - 1, 1));
+			vec3 off = vel * dt + 0.5 * debris_gravity * dt * dt;
 			p += off * (1.0 - heal);
 			size_scale *= mix(1.0 - life * life, 1.0, heal);
 			glow += (1.0 - smoothstep(0.0, 0.25, life)) * (1.0 - heal);
@@ -247,7 +278,11 @@ void vertex() {
 
 	c.rgb = mix(c.rgb, tint.rgb, tint_amount);
 
-	custom_effect(p, n, c, size_scale, rest, seed, id, cloud_time);
+	custom_effect(p, n, c, size_scale, rest, seed, id, sub, cloud_time);
+	if (padding) {
+		p = vec3(1e9); // far outside every frustum
+		size_scale = 0.0;
+	}
 
 	VERTEX = p;
 	NORMAL = n;

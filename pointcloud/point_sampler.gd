@@ -209,6 +209,7 @@ static func from_mesh(mesh: Mesh, count: int, opts: Dictionary = {}) -> PointClo
 	# Surface points first (one evenly spread pass), then interior points.
 	var n_inside := int(count * fill_fraction)
 	var n_surface := count - n_inside
+	var skin_gap := sqrt(total / maxf(1.0, n_surface)) * SIZE_FACTOR * 1.5
 
 	for si in count:
 		var o := slot[si]
@@ -252,10 +253,14 @@ static func from_mesh(mesh: Mesh, count: int, opts: Dictionary = {}) -> PointClo
 			col = override_color
 
 		if inside:
+			# Interior points stay a few dot-widths under the surface so they
+			# can't poke through between surface dots.
 			if fill == Fill.SOLID:
-				p = center + (p - center) * pow(rng.randf(), 1.0 / 3.0)
+				var dist := (p - center).length()
+				var max_scale := maxf(0.0, 1.0 - skin_gap / maxf(dist, 1e-6))
+				p = center + (p - center) * pow(rng.randf(), 1.0 / 3.0) * max_scale
 			else:
-				p -= n * rng.randf() * thickness
+				p -= n * lerpf(minf(skin_gap, thickness), thickness, rng.randf())
 		if use_fn:
 			col = color_fn.call(p, n, col, inside)
 

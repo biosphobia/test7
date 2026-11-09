@@ -2,7 +2,10 @@ extends Node3D
 ## Demo world: everything you see is a PointCloud — the ground, the props, the
 ## player and the enemy. Aim at something and play with it.
 
-const MORPH_POINTS := 300000
+const MORPH_POINTS := 400000
+## Dots drawn per stored point on most objects (see PointCloud.density).
+const DETAIL := 4
+const GROUND_DETAIL := 2
 
 var player: PointPlayer
 var worm: PointWorm
@@ -33,7 +36,9 @@ func _ready() -> void:
 	add_child(player)
 
 	for c in get_tree().get_nodes_in_group(&"point_clouds"):
-		(c as PointCloud).prepare_interaction()
+		var cloud := c as PointCloud
+		cloud.density = GROUND_DETAIL if cloud.get_parent().name == "Ground" else DETAIL
+		cloud.prepare_interaction()
 	_build_hud()
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 
@@ -86,7 +91,7 @@ func _build_ground() -> void:
 	add_child(body)
 
 	var cloud := PointCloud.new()
-	cloud.data = PointSampler.plane(Vector2(size, size), 1200000, {
+	cloud.data = PointSampler.plane(Vector2(size, size), 1500000, {
 		"fill": PointSampler.Fill.SHELL, "fill_fraction": 0.25, "thickness": 0.5,
 		"color_fn": func(p: Vector3, _n, _c, inside: bool) -> Color:
 			if inside:
@@ -99,6 +104,7 @@ func _build_ground() -> void:
 			return Color(0.16, 0.17, 0.2) if checker == 0 else Color(0.12, 0.13, 0.16),
 	})
 	cloud.debris_gravity = Vector3(0, -8, 0)
+	cloud.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF  # nothing below it to shade
 	body.add_child(cloud)
 	body.set_meta("cloud", cloud)
 
@@ -136,7 +142,7 @@ func _build_props() -> void:
 	var crate_mesh := BoxMesh.new()
 	crate_mesh.size = Vector3(1.6, 1.6, 1.6)
 	crate_mesh.material = crate_mat
-	var crate := PointSampler.from_mesh(crate_mesh, 200000, {"fill": PointSampler.Fill.SOLID, "fill_fraction": 0.35,
+	var crate := PointSampler.from_mesh(crate_mesh, 250000, {"fill": PointSampler.Fill.SOLID, "fill_fraction": 0.35,
 		"color_fn": func(_p, _n, c: Color, inside: bool) -> Color: return Color(0.45, 0.28, 0.12) if inside else c})
 	var cb := BoxShape3D.new()
 	cb.size = crate_mesh.size
@@ -145,14 +151,14 @@ func _build_props() -> void:
 	# Monoliths.
 	var cols := [Color(0.3, 0.55, 1.0), Color(0.9, 0.25, 0.4), Color(0.4, 0.95, 0.5)]
 	for i in 3:
-		var d := PointSampler.box(Vector3(1.2, 4.0, 1.2), 160000, {"color": cols[i]})
+		var d := PointSampler.box(Vector3(1.2, 4.0, 1.2), 200000, {"color": cols[i]})
 		var mb := BoxShape3D.new()
 		mb.size = Vector3(1.2, 4.0, 1.2)
 		var p := _make_prop("Monolith %d" % (i + 1), d, Vector3(6 + i * 2.5, 2.0, -4 - i * 2.0), mb)
 		p.rotation.y = 0.4 * i
 
 	# A floating jelly orb that wobbles all the time.
-	var orb := PointSampler.sphere(1.0, 200000, {"color_fn": func(p: Vector3, _n, _c, _in) -> Color:
+	var orb := PointSampler.sphere(1.0, 250000, {"color_fn": func(p: Vector3, _n, _c, _in) -> Color:
 		return Color(0.75, 0.35, 1.0).lerp(Color(0.2, 0.9, 1.0), clampf(p.y * 0.5 + 0.5, 0.0, 1.0))})
 	var os := SphereShape3D.new()
 	os.radius = 1.0
@@ -228,6 +234,10 @@ func _unhandled_input(event: InputEvent) -> void:
 			target.wobble_amplitude = 0.0 if target.wobble_amplitude > 0.0 else 0.08
 		elif event.is_action_pressed("heal"):
 			target.heal(1.5)
+		elif event.is_action_pressed("density_up"):
+			target.density = mini(target.density * 2, 16)
+		elif event.is_action_pressed("density_down"):
+			target.density = maxi(target.density / 2, 1)
 	if event.is_action_pressed("restore"):
 		for c in get_tree().get_nodes_in_group(&"point_clouds"):
 			(c as PointCloud).restore()
@@ -294,6 +304,7 @@ func _build_hud() -> void:
 		"Aim at something, then:",
 		"  E morph · Q dissolve / reassemble · F explode",
 		"  V vibrate · G wobble · H heal holes",
+		"  [ / ] fewer / more dots per point",
 		"R restore everything · Esc free mouse",
 	])
 	layer.add_child(_info)
@@ -318,13 +329,15 @@ func _build_hud() -> void:
 func _update_hud() -> void:
 	var total := 0
 	for c in get_tree().get_nodes_in_group(&"point_clouds"):
-		total += (c as PointCloud).get_point_count()
+		total += (c as PointCloud).get_dot_count()
 	var aimed := "-"
 	if target:
 		aimed = target_body.name
 		if target == worm.cloud:
 			aimed += " (hp %d)" % worm.hp
-	_status.text = "%d FPS\n%s points\ntarget: %s" % [Engine.get_frames_per_second(), _group_digits(total), aimed]
+	if target:
+		aimed += "\n%s dots (%d per point)" % [_group_digits(target.get_dot_count()), target.density]
+	_status.text = "%d FPS\n%s dots\ntarget: %s" % [Engine.get_frames_per_second(), _group_digits(total), aimed]
 
 
 static func _group_digits(n: int) -> String:
@@ -341,6 +354,7 @@ func _setup_input() -> void:
 		"move_forward": KEY_W, "move_back": KEY_S, "move_left": KEY_A, "move_right": KEY_D,
 		"jump": KEY_SPACE, "sprint": KEY_SHIFT, "morph": KEY_E, "dissolve": KEY_Q,
 		"explode": KEY_F, "vibrate": KEY_V, "wobble": KEY_G, "heal": KEY_H, "restore": KEY_R,
+		"density_down": KEY_BRACKETLEFT, "density_up": KEY_BRACKETRIGHT,
 	}
 	for action in keys:
 		if not InputMap.has_action(action):
