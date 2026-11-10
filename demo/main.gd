@@ -30,6 +30,7 @@ var _intro_centre := Vector3.ZERO
 var _intro_prox := 0.0
 var _intro_crack := 0.0
 var _intro_jolt := 0.0
+var _intro_shake := 0.0
 var _intro_flash := 0.0
 var _intro_rays: ColorRect
 var _hud_layer: CanvasLayer
@@ -91,7 +92,7 @@ func start_intro() -> void:
 	for c in get_tree().get_nodes_in_group(&"point_clouds"):
 		var cloud := c as PointCloud
 		cloud.gather_center = _intro_centre
-		cloud.gather_reach = 30.0
+		cloud.gather_reach = 46.0
 		cloud.gather_burst = 6.0
 		cloud.gather = 1.0
 	# Beams of light that break out of the ball when it's clicked.
@@ -139,9 +140,10 @@ func _intro_crack_step(i: int) -> void:
 	_intro_jolt = 1.0
 	var tw := create_tween()
 	tw.tween_property(self, "_intro_crack", (i + 1) / 5.0, 0.12)
-	# The camera lurches a little closer.
-	var to := _intro_cam.global_position.move_toward(_intro_centre, 0.45)
-	tw.parallel().tween_property(_intro_cam, "global_position", to, 0.35).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+	_intro_shake = maxf(_intro_shake, 0.22)
+	# The camera lurches closer: a quarter of the remaining distance each time.
+	var to := _intro_cam.global_position.lerp(_intro_centre, 0.25)
+	tw.parallel().tween_property(_intro_cam, "global_position", to, 0.3).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
 
 
 func _intro_release() -> void:
@@ -149,10 +151,13 @@ func _intro_release() -> void:
 		var cloud := c as PointCloud
 		cloud.gather_last = 1.0 if player.is_ancestor_of(cloud) else 0.0
 		cloud.create_tween().tween_property(cloud, "gather", 0.0, 10.5)
-	# The blast throws the camera back, far enough to see all of it.
-	var back := _intro_cam.global_position + _intro_cam.global_basis.z * 7.5
-	create_tween().tween_property(_intro_cam, "global_position", back, 1.1) \
+	# The blast shakes the camera hard and throws it back.
+	_intro_shake = 1.0
+	var back := _intro_cam.global_position + _intro_cam.global_basis.z * 6.0
+	create_tween().tween_property(_intro_cam, "global_position", back, 1.0) \
 			.set_trans(Tween.TRANS_QUART).set_ease(Tween.EASE_OUT)
+	for c in get_tree().get_nodes_in_group(&"point_clouds"):
+		(c as PointCloud).gather_eye = back
 
 
 func _end_intro() -> void:
@@ -178,6 +183,11 @@ func _update_intro(delta: float) -> void:
 		prox = 0.0  # clicked: it pulls tight again before it cracks
 	_intro_prox = lerpf(_intro_prox, prox, 1.0 - exp(-6.0 * delta))
 	_intro_jolt = lerpf(_intro_jolt, 0.0, 1.0 - exp(-7.0 * delta))
+	# Screen shake: a jolt per crack, a long violent one for the explosion.
+	_intro_shake = lerpf(_intro_shake, 0.0, 1.0 - exp(-2.4 * delta))
+	if _intro_cam:
+		_intro_cam.h_offset = randf_range(-1.0, 1.0) * _intro_shake * 0.35
+		_intro_cam.v_offset = randf_range(-1.0, 1.0) * _intro_shake * 0.35
 	var cracking := clampf(0.12 * _intro_crack + _intro_jolt, 0.0, 1.0)
 	var heat := 0.3 + 1.2 * _intro_prox + 0.5 * _intro_crack + 0.8 * _intro_jolt
 	var radius := 0.15 * (1.0 + 0.7 * _intro_prox)

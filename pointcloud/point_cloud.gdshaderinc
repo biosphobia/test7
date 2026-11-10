@@ -123,6 +123,7 @@ uniform float gather_heat = 0.0;          // white-hot glow of gathered atoms
 uniform float gather_agitate = 0.0;       // 0..1: the ball shakes
 uniform float gather_burst = 11.0;        // how far the explosion throws atoms
 uniform float gather_last = 0.0;          // 1 = this cloud is built last
+uniform vec3 gather_eye = vec3(0.0);      // world: the build starts farthest from here
 // Element behaviour of loose atoms (see PointElement).
 uniform bool debris_lands = false;     // collide with the ground plane
 uniform float debris_floor_y = 0.0;    // ground height, local space
@@ -631,20 +632,21 @@ void vertex() {
 		vec3 dirv = spray ? rand_dir(gk + 31u) : rand_dir(jet * 9781u + 5u);
 		float len = spray ? 0.25 + 0.75 * hash01(gk + 13u)
 				: (0.12 + 0.88 * pow(hash01(gk + 13u), 0.7)) * (0.55 + 0.45 * hash01(jet * 13u + 1u));
-		len *= gather_burst;
+		// The blast never comes to rest: the jets keep streaming outwards and
+		// writhing for as long as their atoms are waiting to be placed.
+		len *= gather_burst * (1.0 + 7.0 * x);
 		vec3 blown = dirv * len;
 		blown += rand_dir(gk + 41u) * len * (spray ? 0.0 : 0.04);
-		blown += flow(blown * 0.22 + float(jet), cloud_time * 0.5) * len * 0.14 * s1;
+		blown += flow(blown * 0.16 + float(jet), cloud_time * 0.7) * len * (0.12 + 0.35 * x) * s1;
 		vec3 from = gather_center + mix(sing, blown, s1);
 
 		// Act 2, the world is built: atoms travel to their places the way a
 		// digital world assembles: along the axes (x, then z, then y), snapped
-		// to a coarse grid of "pixels" until they slot in. The build sweeps
-		// outwards over the ground and climbs each object from the bottom.
+		// to a coarse grid of "pixels" until they slot in.
 		vec3 wplace = (MODEL_MATRIX * vec4(place, 1.0)).xyz;
-		vec3 wcentre = (MODEL_MATRIX * vec4(gather_center, 1.0)).xyz;
-		float order = 0.7 * clamp(length(wplace.xz - wcentre.xz) / gather_reach, 0.0, 1.0)
-				+ 0.3 * clamp(wplace.y / 5.0, 0.0, 1.0);
+		// Farthest from the viewer first, coming closer; each object bottom-up.
+		float order = 0.88 * (1.0 - clamp(distance(wplace, gather_eye) / gather_reach, 0.0, 1.0))
+				+ 0.12 * clamp(wplace.y / 5.0, 0.0, 1.0);
 		order = mix(order, 1.0, gather_last);
 		// Each atom's trip is short, so at any moment most atoms are either
 		// still in the blast's jets or already in place, not in between.
