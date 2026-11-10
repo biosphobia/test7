@@ -555,7 +555,12 @@ void vertex() {
 
 	// --- point size: constant world-space size, converted to pixels
 	vec4 vp = MODELVIEW_MATRIX * vec4(p, 1.0);
-	if (backface_cull && still && on_surface && use_skin) { // skinned: normal known only now
+	// Skinned: the normal is known only now. Also: while an effect runs, atoms
+	// it hasn't moved yet are culled exactly as at rest, so starting an effect
+	// changes neither the picture nor the shadow.
+	bool untouched = !still && disp == 0.0 && fly == 0.0 && morph_t == 0.0 && st.x < 0.0
+			&& vibrate_amplitude == 0.0 && wobble_amplitude == 0.0;
+	if (backface_cull && on_surface && !cull && (still ? use_skin : untouched)) {
 		vec3 view_dir = PROJECTION_MATRIX[3][3] > 0.5 ? vec3(0.0, 0.0, -1.0) : normalize(vp.xyz);
 		if (dot(normalize(mat3(MODELVIEW_MATRIX) * n), view_dir) > 0.25) {
 			size_scale = 0.0;
@@ -637,6 +642,11 @@ void fragment() {
 		discard;
 	}
 	vec2 pc = POINT_COORD * 2.0 - 1.0;
+	// Open, thin models are seen from both sides: light the side that faces us.
+	vec3 vn = v_vnormal;
+	if (!backface_cull && dot(vn, (mod(v_flags + 0.5, 2.0) >= 1.0) ? vec3(0.0, 0.0, -1.0) : v_center) > 0.0) {
+		vn = -vn;
+	}
 	// Point on the sprite's plane (view space) that this pixel looks at.
 	vec3 q = v_center + vec3(pc.x * v_sprite, -pc.y * v_sprite * v_ysign, 0.0);
 	vec3 hit = q;
@@ -667,7 +677,7 @@ void fragment() {
 		float detail = smoothstep(4.0, 11.0, v_px);
 		// Atoms in flight are lit as if facing the viewer: their own surface
 		// normals point everywhere once they scatter, which would flicker.
-		vec3 base_n = normalize(mix(v_vnormal, vec3(0.0, 0.0, 1.0), v_fly));
+		vec3 base_n = normalize(mix(vn, vec3(0.0, 0.0, 1.0), v_fly));
 		NORMAL = normalize(mix(base_n, bn, mix(bead_bulge, 1.0, v_fly) * detail));
 		bead_shade = mix(1.0, mix(1.0 - bead_edge_shade, 1.0, bn.z), detail * max(v_fly, bead_bulge));
 		// The surface point under this pixel: intersect the pixel's view ray
@@ -684,13 +694,13 @@ void fragment() {
 			vec4 hv = INV_PROJECTION_MATRIX * vec4(SCREEN_UV * 2.0 - 1.0, 0.5, 1.0);
 			rd = normalize(hv.xyz / hv.w);
 		}
-		float denom = dot(rd, v_vnormal);
+		float denom = dot(rd, vn);
 		grazing = max(abs(denom), 0.05); // for the texture's mip level
 		vec3 plane_off = q - v_center;
 		if (abs(denom) > 0.05) {
-			plane_off = ro + rd * (dot(v_center - ro, v_vnormal) / denom) - v_center;
+			plane_off = ro + rd * (dot(v_center - ro, vn) / denom) - v_center;
 		}
-		plane_off -= v_vnormal * dot(plane_off, v_vnormal);
+		plane_off -= vn * dot(plane_off, vn);
 		// Resting beads light like the surface; beads in flight like spheres.
 		hit = mix(v_center + plane_off, v_center + bn * v_radius, v_fly);
 		vec3 local_off = (transpose(mv) * plane_off) / (mv_scale * mv_scale);
@@ -698,7 +708,14 @@ void fragment() {
 		if (clip_bounds) {
 			vec3 lo = v_local + local_off;
 			vec3 eps = bounds_size * 0.0005 + vec3(1e-5);
-			if (any(lessThan(lo, bounds_min - eps)) || any(greaterThan(lo, bounds_min + bounds_size + eps))) {
+			// Only trim sideways: a surface lying against the box (a cube's face,
+			// the spot where a sphere touches its box) must not be cut by the
+			// wall it faces, or curved models get holes there.
+			bvec3 side = lessThan(abs(normalize(v_lnormal + vec3(1e-6))), vec3(0.8));
+			bvec3 outside = bvec3(lo.x < bounds_min.x - eps.x || lo.x > bounds_min.x + bounds_size.x + eps.x,
+					lo.y < bounds_min.y - eps.y || lo.y > bounds_min.y + bounds_size.y + eps.y,
+					lo.z < bounds_min.z - eps.z || lo.z > bounds_min.z + bounds_size.z + eps.z);
+			if ((side.x && outside.x) || (side.y && outside.y) || (side.z && outside.z)) {
 				discard;
 			}
 		}
@@ -706,12 +723,12 @@ void fragment() {
 		// Intersect this pixel's view ray with the dot's tangent-plane disc.
 		vec3 ro = ortho ? vec3(q.xy, 0.0) : vec3(0.0);
 		vec3 rd = ortho ? vec3(0.0, 0.0, -1.0) : normalize(q);
-		float denom = dot(rd, v_vnormal);
+		float denom = dot(rd, vn);
 		grazing = abs(denom);
 		if (grazing < 0.02) {
 			discard; // seen exactly edge-on: neighbouring discs cover this
 		}
-		hit = ro + rd * (dot(v_center - ro, v_vnormal) / denom);
+		hit = ro + rd * (dot(v_center - ro, vn) / denom);
 		vec3 off = hit - v_center;
 		if (dot(off, off) > v_radius * v_radius) {
 			discard;
@@ -722,11 +739,18 @@ void fragment() {
 		// Bend the normal across the disc with the surface's curvature tensor,
 		// reproducing the source mesh's smoothly interpolated normals, so the
 		// shading of neighbouring discs meets seamlessly.
-		NORMAL = normalize(v_vnormal + mv * (v_shape * local_off) / mv_scale);
+		NORMAL = normalize(vn + mv * (v_shape * local_off) / mv_scale);
 		if (clip_bounds) {
 			vec3 lo = v_local + local_off;
 			vec3 eps = bounds_size * 0.0005 + vec3(1e-5);
-			if (any(lessThan(lo, bounds_min - eps)) || any(greaterThan(lo, bounds_min + bounds_size + eps))) {
+			// Only trim sideways: a surface lying against the box (a cube's face,
+			// the spot where a sphere touches its box) must not be cut by the
+			// wall it faces, or curved models get holes there.
+			bvec3 side = lessThan(abs(normalize(v_lnormal + vec3(1e-6))), vec3(0.8));
+			bvec3 outside = bvec3(lo.x < bounds_min.x - eps.x || lo.x > bounds_min.x + bounds_size.x + eps.x,
+					lo.y < bounds_min.y - eps.y || lo.y > bounds_min.y + bounds_size.y + eps.y,
+					lo.z < bounds_min.z - eps.z || lo.z > bounds_min.z + bounds_size.z + eps.z);
+			if ((side.x && outside.x) || (side.y && outside.y) || (side.z && outside.z)) {
 				discard;
 			}
 		}

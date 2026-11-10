@@ -311,8 +311,11 @@ func _unhandled_input(event: InputEvent) -> void:
 		quality.enabled = false
 		var f := 1.25 if event.is_action_pressed("detail_down") else 0.8
 		PointCloud.lod_spacing_px = clampf(PointCloud.lod_spacing_px * f, 1.0, 10.0)
+	elif event.is_action_pressed("res_down") or event.is_action_pressed("res_up"):
+		var f := 0.85 if event.is_action_pressed("res_down") else 1.0 / 0.85
+		quality.resolution_scale = clampf(quality.resolution_scale * f, 0.4, 1.0)
 	elif event.is_action_pressed("detail_auto"):
-		quality.enabled = true
+		quality.enabled = not quality.enabled
 	elif event.is_action_pressed("toggle_blend"):
 		blend_post.visible = not blend_post.visible
 	elif event.is_action_pressed("switch_renderer") and not OS.has_feature("editor"):
@@ -400,7 +403,8 @@ func _build_hud() -> void:
 		"Aim at something, then:",
 		"  E morph · Q dissolve / reassemble · F explode",
 		"  V vibrate · G wobble · H heal holes",
-		"- / = less / more detail · 0 automatic (holds 60 fps)",
+		"[ / ] lower / raise resolution · - / = less / more detail",
+		"0 automatic detail on/off (off by default)",
 		"F9 smoothing filter on/off · F10 switch renderer (Compatibility is faster)",
 		"R restore everything · Esc free mouse",
 	])
@@ -476,6 +480,7 @@ func _setup_input() -> void:
 		"jump": KEY_SPACE, "sprint": KEY_SHIFT, "morph": KEY_E, "dissolve": KEY_Q,
 		"explode": KEY_F, "vibrate": KEY_V, "wobble": KEY_G, "heal": KEY_H, "restore": KEY_R,
 		"detail_down": KEY_MINUS, "detail_up": KEY_EQUAL, "detail_auto": KEY_0,
+		"res_down": KEY_BRACKETLEFT, "res_up": KEY_BRACKETRIGHT,
 		"switch_renderer": KEY_F10, "toggle_blend": KEY_F9,
 	}
 	for action in keys:

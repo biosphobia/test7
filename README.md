@@ -42,7 +42,9 @@ Open the folder in **Godot 4.4 or newer** and press Play (`demo/main.tscn`).
 | F | explode pulse |
 | V / G | toggle vibrate / wobble |
 | H | heal: carved-off points fly back into place |
-| - / = / 0 | less / more detail by hand, or back to automatic (targets 60 fps) |
+| [ / ] | lower / raise the 3D render resolution (the option for slow GPUs) |
+| - / = | less / more detail (bigger / smaller atoms) |
+| 0 | automatic detail on / off (off by default: detail never changes by itself) |
 | F10 | switch renderer: Compatibility (default, fastest) ↔ Forward+ |
 | R | restore everything instantly |
 | F9 | smoothing filter on/off (edge-aware blend over the 3D view) |
@@ -120,6 +122,11 @@ point_cloud.gdshader           draws up to `max_amplification` beads per point; 
   no visible transition. Lighting shifts gradually with distance from an
   atom's place, from surface-lit to a free, partly glowing speck. Interior
   points show only once they've moved or as hole walls.
+* **Any model.** Open or thin-shell meshes (a vase, a leaf) are detected
+  when sampled (`PointCloudData.closed`) and drawn and lit from both sides.
+  Morph targets with fewer points are spread out to cover evenly.
+  `tests/custom_model_test.tscn` exercises a hand-built open mesh and a
+  multi-mesh figure.
 * **Swirls and swarms.** Atoms are carried by a smooth flow field, so
   neighbours move together: explosions twist and break into streams, and
   morphs first come apart into a drifting cloud, then swarm into the new
@@ -245,12 +252,15 @@ trades detail to hold the target. The main techniques:
   about 3.6× faster than Forward+ in testing. Press **F10** in game to switch
   to Forward+ (nicer, heavier). The launcher restarts the game with the
   chosen renderer and remembers it.
-* **Auto quality.** `PointCloudQuality` measures GPU time and adjusts
-  `lod_spacing_px` (and, if needed, the 3D render scale with FSR upscaling)
-  to hold the target frame rate. Where the driver doesn't report GPU time
-  (common with Compatibility), it works from frame time: it steps down when
-  below target and periodically probes back up. In the demo, `-` / `=` set detail by hand and
-  `0` returns to automatic. The HUD shows how many dots are drawn.
+* **Capped render resolution.** Atoms are sized in pixels, so their number
+  grows with resolution. `PointCloudQuality` renders the 3D view at most
+  `max_render_height` (800) pixels high and upscales it, so a 1080p or 1440p
+  screen costs about the same as 720p and looks the same. `resolution_scale`
+  (`[` / `]` in the demo) lowers it further on slow GPUs.
+* **Detail is manual by default.** `PointCloud.lod_spacing_px` stays where
+  you set it (`-` / `=` in the demo). Automatic detail
+  (`PointCloudQuality.enabled`, `0` in the demo) is opt-in: it adjusts
+  detail and resolution to hold `target_fps`.
 
 Measured with CPU-only software rendering (so only the ratio means
 anything), a demo frame went from 9.6 s to about 0.45 s at the same detail,

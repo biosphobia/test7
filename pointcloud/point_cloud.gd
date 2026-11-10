@@ -899,6 +899,7 @@ func _bind_current() -> void:
 	_sp(&"use_skin", data.is_skinned() and _skin_in_use != null)
 	_sp(&"point_spacing", data.suggested_point_size / PointSampler.SIZE_FACTOR)
 	_sp(&"interior_scale", _interior_scale_for(data))
+	_sp(&"backface_cull", data.closed and (_tgt == null or _tgt.data.closed))
 	_sp(&"bounds_min", data.aabb.position)
 	_sp(&"bounds_size", data.aabb.size)
 	_update_point_size()
@@ -912,6 +913,7 @@ func _bind_current() -> void:
 func _bind_target(sh: _ShapeTex) -> void:
 	# Dots blend to the target's dot size as they travel, so nothing changes
 	# size when the morph completes and the target becomes the shape.
+	_sp(&"backface_cull", data != null and data.closed and sh.data.closed)
 	_sp(&"target_point_size", _point_size_for(sh.data))
 	_sp(&"target_interior_scale", _interior_scale_for(sh.data))
 	_sp(&"target_pos_tex", sh.pos)
@@ -1068,7 +1070,8 @@ func _update_lod() -> void:
 			var box := global_transform * data.aabb
 			var cp := cam.global_position
 			var d := maxf(cp.distance_to(cp.clamp(box.position, box.end)), cam.near)
-			var view_h := get_viewport().get_visible_rect().size.y
+			# Atoms are sized in rendered pixels: count them at the 3D render scale.
+			var view_h := get_viewport().get_visible_rect().size.y * get_viewport().scaling_3d_scale
 			var px_per_unit := view_h / cam.size
 			if cam.projection == Camera3D.PROJECTION_PERSPECTIVE:
 				px_per_unit = view_h * 0.5 / tan(deg_to_rad(cam.fov) * 0.5) / d
