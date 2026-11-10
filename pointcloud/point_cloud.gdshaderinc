@@ -167,6 +167,7 @@ uniform float bead_size = 0.4;
 // dissolves flow from surface to beads and back without anything popping.
 // Off = flat surface discs (splats) while resting.
 uniform bool beads = true;
+uniform bool square = true;                // atoms are little squares (voxel look), not round
 // Resting bead diameter relative to point_size (must close the surface).
 // Extra beads up close sit in overlapping random-ish clusters and need more
 // overlap than the evenly spread stored points, hence two values.
@@ -874,7 +875,7 @@ void fragment() {
 	if (v_shadow > 0.5) {
 		// Shadow map: a round dot, flat depth (see shadow_disc_scale). Round
 		// dots give shadow edges a smooth outline; squares leave them jagged.
-		if (dot(pc, pc) > 1.0) {
+		if (!square && dot(pc, pc) > 1.0) {
 			discard;
 		}
 	} else if (v_bead > 0.5) {
@@ -883,9 +884,10 @@ void fragment() {
 		// beads in flight are full spheres. The blend follows v_fly, so the
 		// look changes continuously.
 		float r2 = dot(pc, pc);
-		if (r2 > 1.0) {
+		if (!square && r2 > 1.0) {
 			discard;
 		}
+		r2 = min(r2, 1.0); // (square atoms keep their corners)
 		vec3 bn = vec3(pc.x, -pc.y * v_ysign, sqrt(1.0 - r2));
 		// Beads only a few pixels wide can't show their roundness; their rims
 		// would just beat against the pixel grid (moire). Fade the bead
@@ -976,7 +978,7 @@ void fragment() {
 	} else if (round_points && v_px > 3.5) {
 		// Rounding only helps once a point covers several pixels; below that
 		// it just punches holes in the surface.
-		if (dot(pc, pc) > 1.0) {
+		if (!square && dot(pc, pc) > 1.0) {
 			discard;
 		}
 	}

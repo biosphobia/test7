@@ -559,6 +559,10 @@ func _unhandled_input(event: InputEvent) -> void:
 		quality.resolution_scale = clampf(quality.resolution_scale * f, 0.4, 1.0)
 	elif event.is_action_pressed("detail_auto"):
 		quality.enabled = not quality.enabled
+	elif event.is_action_pressed("toggle_square"):
+		PointCloud.default_square = not PointCloud.default_square
+		for c in get_tree().get_nodes_in_group(&"point_clouds"):
+			(c as PointCloud).square = PointCloud.default_square
 	elif event.is_action_pressed("toggle_blend"):
 		blend_post.visible = not blend_post.visible
 	elif event.is_action_pressed("switch_renderer") and not OS.has_feature("editor"):
@@ -728,7 +732,7 @@ func _build_hud() -> void:
 		"[ / ] lower / raise resolution · - / = less / more detail",
 		"0 automatic detail on/off (off by default)",
 		"F9 smoothing filter on/off · F10 switch renderer (Compatibility is faster)",
-		"Backspace restore everything · Esc free mouse",
+		"F8 square / round atoms · Backspace restore everything · Esc free mouse",
 	])
 	layer.add_child(_info)
 	_status = Label.new()
@@ -804,7 +808,7 @@ func _setup_input() -> void:
 		"explode": KEY_F, "vibrate": KEY_V, "wobble": KEY_G, "heal": KEY_H, "restore": KEY_BACKSPACE, "reload": KEY_R,
 		"detail_down": KEY_MINUS, "detail_up": KEY_EQUAL, "detail_auto": KEY_0,
 		"res_down": KEY_BRACKETLEFT, "res_up": KEY_BRACKETRIGHT,
-		"switch_renderer": KEY_F10, "toggle_blend": KEY_F9,
+		"switch_renderer": KEY_F10, "toggle_blend": KEY_F9, "toggle_square": KEY_F8,
 	}
 	for action in keys:
 		if not InputMap.has_action(action):

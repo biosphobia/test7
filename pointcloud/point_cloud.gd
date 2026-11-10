@@ -105,6 +105,13 @@ static var _clock_frame := -1
 ## close the surface; flying beads shrink. Size and shading change smoothly
 ## with how far a dot is "in flight", so morphs and debris never pop.
 ## Off = flat surface discs (see `splats`) while resting.
+## Every cloud created from now on uses this for `square`.
+static var default_square := true
+## Atoms are drawn as little squares (a voxel-art look) instead of round dots.
+@export var square := default_square:
+	set(v):
+		square = v
+		_sp(&"square", v)
 @export var beads := true:
 	set(v):
 		beads = v
@@ -488,7 +495,7 @@ func _init() -> void:
 			&"wobble_amplitude", &"wobble_frequency", &"wobble_speed", &"explode", &"explode_center",
 			&"dissolve", &"dissolve_direction", &"dissolve_directional", &"dissolve_spread",
 			&"dissolve_drift", &"dissolve_edge_color", &"glow_strength", &"morph", &"morph_stagger",
-			&"morph_arc", &"debris_lifetime", &"debris_gravity", &"beads", &"bead_overlap", &"splats", &"clip_to_bounds", &"texture_tile", &"texture_offset"]:
+			&"morph_arc", &"debris_lifetime", &"debris_gravity", &"beads", &"square", &"bead_overlap", &"splats", &"clip_to_bounds", &"texture_tile", &"texture_offset"]:
 		_sp(p, get(p))
 	_apply_element()
 
