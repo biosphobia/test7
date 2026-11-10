@@ -118,8 +118,9 @@ uniform vec3 debris_gravity = vec3(0.0, -3.0, 0.0);
 uniform float gather = 0.0;
 uniform vec3 gather_center = vec3(0.0);   // local space
 uniform float gather_radius = 0.4;
-uniform float gather_reach = 9.0;         // how far the burst throws atoms
+uniform float gather_reach = 30.0;        // distance at which the last atoms leave
 uniform float gather_heat = 0.0;          // white-hot glow of gathered atoms
+uniform float gather_agitate = 0.0;       // 0..1: the ball shakes
 // Element behaviour of loose atoms (see PointElement).
 uniform bool debris_lands = false;     // collide with the ground plane
 uniform float debris_floor_y = 0.0;    // ground height, local space
@@ -607,30 +608,38 @@ void vertex() {
 	if (gather > 0.0 && !cull) {
 		vec3 place = p;
 		uint gk = uid * 41u + 11u;
-		// In the ball every atom circles the centre on its own tilted orbit.
+		// In the ball every atom circles the centre on its own tilted orbit;
+		// agitation makes it shake.
 		vec3 ax = rand_dir(gk);
 		vec3 perp = normalize(cross(ax, rand_dir(gk + 5u)) + vec3(1e-5));
 		float ang = cloud_time * (1.2 + 3.5 * hash01(gk + 9u)) + seed * TAU;
 		vec3 orb = perp * cos(ang) + cross(ax, perp) * sin(ang);
-		vec3 sing = gather_center + orb * gather_radius * pow(hash01(gk + 3u), 0.6)
-				+ flow(orb * 3.0 + seed, cloud_time * 2.0) * gather_radius * 0.2;
+		vec3 sing = orb * gather_radius * pow(hash01(gk + 3u), 0.6)
+				+ flow(orb * 3.0 + seed, cloud_time * 2.0) * gather_radius * 0.2
+				+ rand_dir(gk + uint(cloud_time * 24.0) * 7919u) * gather_radius * 0.7 * gather_agitate;
+		// The world unfolds out of the ball: every atom leaves along a spiral
+		// that is its own place shrunk and twisted about the vertical axis, so
+		// what streams out is the scene itself, in miniature, unwinding like
+		// the arms of a galaxy. Near things leave first; the ball drains.
+		vec3 v = place - gather_center;
+		float d = length(v);
 		float x = 1.0 - gather;
-		float grp = 0.5 + 0.5 * flow(rest * 0.6, 0.0).x;
-		float sched = mix(seed, grp, 0.7);
-		// The bang: thrown outwards very fast, slowing into a wide drifting cloud.
-		float s1 = clamp(x / 0.2, 0.0, 1.0);
-		s1 = 1.0 - pow(1.0 - s1, 4.0);
-		vec3 far = gather_center + orb * gather_reach * (0.2 + 0.8 * hash01(gk + 13u));
-		far += flow(far * 0.3 + grp * 3.0, cloud_time * 0.8) * gather_reach * 0.18;
-		vec3 q = mix(sing, far, s1);
-		// Then each clump of atoms swarms to its place.
-		float t = clamp((x - 0.28 - sched * 0.46) / 0.26, 0.0, 1.0);
-		t = t * t * (3.0 - 2.0 * t);
-		q = mix(q, place, t) + flow(place * 0.7 + grp * 4.0, cloud_time * 1.4) * sin(t * PI) * 0.8;
-		p = q;
+		float grp = 0.5 + 0.5 * flow(rest * 0.5, 0.0).x;
+		float start = 0.62 * mix(clamp(d / gather_reach, 0.0, 1.0), grp, 0.25) + 0.03 * seed;
+		float t = clamp((x - start) / 0.35, 0.0, 1.0);
+		float e = t * t * (3.0 - 2.0 * t);
+		float twist = (1.0 - e) * (1.0 - e) * (2.6 + d * 0.12);
+		float ca = cos(twist);
+		float sa = sin(twist);
+		vec3 sp = vec3(v.x * ca - v.z * sa, v.y, v.x * sa + v.z * ca) * e;
+		float arc = sin(e * PI);
+		sp.y += arc * d * 0.22;                       // streams arch up and over
+		sp += flow(place * 0.5 + grp * 4.0, cloud_time * 0.9) * arc * (0.25 + d * 0.03); // ribbons
+		p = gather_center + sp + sing * (1.0 - e);
 		disp = max(disp, distance(p, place));
-		float heat = gather_heat * (1.0 - t);
-		c.rgb = mix(c.rgb, vec3(1.0, 0.92, 0.75), clamp(heat * 0.45, 0.0, 0.85));
+		// White-hot in the ball, cooling to its own colour as it travels.
+		float heat = gather_heat * (1.0 - e) * (1.0 - e);
+		c.rgb = mix(c.rgb, vec3(1.0, 0.9, 0.7), clamp(heat * 0.5, 0.0, 0.9));
 		glow += heat * 0.5;
 	}
 

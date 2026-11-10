@@ -226,8 +226,8 @@ static var _clock_frame := -1
 
 @export_group("Singularity")
 ## 1 = every atom is packed into a small swarming ball at gather_center.
-## Animate it to 0 for a big bang: the ball bursts and the atoms swarm to
-## their places. See gather_into() / big_bang().
+## Animate it to 0 and the model unfolds out of the ball: atoms stream out
+## along spirals (their own places, shrunk and twisted), near parts first.
 @export_range(0.0, 1.0) var gather := 0.0:
 	set(v):
 		var was := gather
@@ -246,11 +246,17 @@ static var _clock_frame := -1
 	set(v):
 		gather_radius = v
 		_sp(&"gather_radius", v / maxf(_avg_scale(), 1e-6) if is_inside_tree() else v)
-## How far the burst throws the atoms before they swarm home.
-@export var gather_reach := 9.0:
+## Atoms this far from the ball are the last to leave it (sets the order in
+## which a scene unfolds).
+@export var gather_reach := 30.0:
 	set(v):
 		gather_reach = v
 		_sp(&"gather_reach", v)
+## 0..1: how violently the ball shakes.
+@export var gather_agitate := 0.0:
+	set(v):
+		gather_agitate = v
+		_sp(&"gather_agitate", v)
 ## White-hot glow of the gathered atoms.
 @export var gather_heat := 0.0:
 	set(v):
@@ -1314,7 +1320,7 @@ func _update_aabb() -> void:
 		if gather > 0.0 and is_inside_tree():
 			# Gathered atoms are far from the model: keep the cloud from being
 			# culled while they're out there.
-			var r := (gather_reach * 1.6 + gather_radius) / maxf(_avg_scale(), 1e-6)
+			var r := (maxf(gather_reach, 12.0) * 1.3 + gather_radius) / maxf(_avg_scale(), 1e-6)
 			box = box.merge(AABB(to_local(gather_center) - Vector3.ONE * r, Vector3.ONE * r * 2.0))
 		_set_custom_aabb(box)
 

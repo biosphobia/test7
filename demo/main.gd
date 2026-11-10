@@ -28,7 +28,9 @@ var intro_hover_override := -1.0
 var _intro_cam: Camera3D
 var _intro_centre := Vector3.ZERO
 var _intro_prox := 0.0
-var _intro_heat := 0.0
+var _intro_crack := 0.0
+var _intro_flash := 0.0
+var _intro_rays: ColorRect
 var _hud_layer: CanvasLayer
 const BULLET_SPEED := 90.0
 const BULLET_POOL := 8
@@ -88,26 +90,36 @@ func start_intro() -> void:
 	for c in get_tree().get_nodes_in_group(&"point_clouds"):
 		var cloud := c as PointCloud
 		cloud.gather_center = _intro_centre
-		cloud.gather_reach = 9.0
+		cloud.gather_reach = 30.0
 		cloud.gather = 1.0
+	# Beams of light that break out of the ball when it's clicked.
+	var layer := CanvasLayer.new()
+	layer.layer = 0
+	add_child(layer)
+	_intro_rays = ColorRect.new()
+	_intro_rays.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_intro_rays.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_intro_rays.material = ShaderMaterial.new()
+	(_intro_rays.material as ShaderMaterial).shader = preload("res://demo/singularity_rays.gdshader")
+	layer.add_child(_intro_rays)
 
 
-## The big bang: the ball bursts and everything swarms into place; the player
-## last. Then the camera drops into the player's head and control begins.
+## Clicked: the ball turns violent and cracks, light breaking out of it beam
+## by beam; then it bursts and the world unfolds out of it in spirals, near
+## things first, the player last. Then the camera drops into the player's
+## head and control begins.
 func intro_bang() -> void:
 	if intro != Intro.WAIT:
 		return
 	intro = Intro.BANG
-	_intro_heat = 3.0
-	for c in get_tree().get_nodes_in_group(&"point_clouds"):
-		var cloud := c as PointCloud
-		var tw := cloud.create_tween()
-		if player.is_ancestor_of(cloud):
-			tw.tween_interval(1.4)  # the player assembles last
-		tw.tween_property(cloud, "gather", 0.0, 5.2)
 	var tw := create_tween()
-	tw.tween_property(self, "_intro_heat", 0.12, 1.6).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
-	tw.tween_interval(5.1)
+	# Cracking: shaking harder and harder while the beams grow.
+	tw.tween_property(self, "_intro_crack", 1.0, 2.6).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
+	tw.tween_callback(_intro_release)
+	# The flash of the bang, then the beams die away.
+	tw.tween_property(self, "_intro_flash", 0.0, 0.9).from(1.0).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+	tw.parallel().tween_property(self, "_intro_crack", 0.0, 2.5).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_OUT)
+	tw.tween_interval(7.4)
 	tw.tween_callback(func(): intro = Intro.ENTER)
 	# Into the player's eyes.
 	tw.tween_method(func(k: float):
@@ -118,11 +130,24 @@ func intro_bang() -> void:
 	tw.tween_callback(_end_intro)
 
 
+func _intro_release() -> void:
+	for c in get_tree().get_nodes_in_group(&"point_clouds"):
+		var cloud := c as PointCloud
+		var tw := cloud.create_tween()
+		if player.is_ancestor_of(cloud):
+			tw.tween_interval(3.2)  # the player assembles last
+			tw.tween_property(cloud, "gather", 0.0, 6.4)
+		else:
+			tw.tween_property(cloud, "gather", 0.0, 8.6)
+
+
 func _end_intro() -> void:
 	intro = Intro.NONE
 	player.camera.current = true
 	_intro_cam.queue_free()
 	_intro_cam = null
+	_intro_rays.get_parent().queue_free()
+	_intro_rays = null
 	player.set_physics_process(true)
 	_hud_layer.visible = true
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
@@ -136,10 +161,11 @@ func _update_intro(delta: float) -> void:
 		var d := (get_viewport().get_mouse_position() - size * 0.5).length() / (size.y * 0.45)
 		prox = clampf(1.0 - d, 0.0, 1.0)
 	if intro != Intro.WAIT:
-		prox = 0.0
+		prox = 1.0  # stays loose once clicked
 	_intro_prox = lerpf(_intro_prox, prox, 1.0 - exp(-6.0 * delta))
-	var heat := _intro_heat if intro != Intro.WAIT else 0.35 + 1.6 * _intro_prox
-	var radius := 0.4 * (1.0 + 0.8 * _intro_prox)
+	var cracking := _intro_crack
+	var heat := 0.35 + 1.6 * _intro_prox + 1.5 * cracking
+	var radius := 0.17 * (1.0 + 0.7 * _intro_prox + 0.5 * cracking)
 	for c in get_tree().get_nodes_in_group(&"point_clouds"):
 		var cloud := c as PointCloud
 		if cloud.gather <= 0.0:
@@ -147,6 +173,16 @@ func _update_intro(delta: float) -> void:
 		cloud.gather_center = _intro_centre  # (moving clouds: keep it in place)
 		cloud.gather_radius = radius
 		cloud.gather_heat = heat
+		cloud.gather_agitate = cracking
+	if _intro_rays and _intro_cam:
+		var m := _intro_rays.material as ShaderMaterial
+		var c2 := _intro_cam.unproject_position(_intro_centre)
+		var edge := _intro_cam.unproject_position(_intro_centre + _intro_cam.global_basis.x * radius)
+		# Canvas FRAGCOORD is in window pixels, y down like the canvas.
+		m.set_shader_parameter(&"centre", c2)
+		m.set_shader_parameter(&"ball_px", maxf(c2.distance_to(edge), 2.0))
+		m.set_shader_parameter(&"crack", cracking)
+		m.set_shader_parameter(&"flash", _intro_flash)
 
 
 func _intro_click_hits(pos: Vector2) -> bool:

@@ -33,10 +33,11 @@ newer build, it downloads `game.pck` and restarts the exe on it with
 Open the folder in **Godot 4.4 or newer** and press Play (`demo/main.tscn`).
 
 The game opens on a singularity: every atom of the scene, the player
-included, swarms in a small ball in the middle of the screen. It loosens and
-glows as the mouse comes near. Click it for the big bang: the ball bursts,
-the atoms swarm to their places (the player last), and the camera drops into
-the player's head and hands over control.
+included, swarms in a tiny ball in the middle of the screen. It loosens and
+glows as the mouse comes near. Click it and it turns violent and cracks,
+beams of light breaking out one by one; then it bursts and the world unfolds
+out of it in spiralling streams, near things first and the player last. The
+camera then drops into the player's head and hands over control.
 
 | Input | Action |
 |---|---|
@@ -144,9 +145,12 @@ point_cloud.gdshader           draws up to `max_amplification` beads per point; 
   with each other or other objects. `carve(..., kick)` throws the chips in
   a direction, e.g. back along a bullet's path.
 * **Singularity.** `PointCloud.gather` (1 → 0) packs a cloud's atoms into a
-  small swarming ball at `gather_center` and releases them in a burst that
-  swarms into place; `gather_radius`, `gather_reach` and `gather_heat` shape
-  it. The demo intro drives it on every cloud at once.
+  small swarming ball at `gather_center` and lets the model unfold out of
+  it: each atom leaves along a spiral that is its own place shrunk and
+  twisted, so what streams out is the model in miniature, unwinding. Atoms
+  nearer the ball leave first (`gather_reach`); `gather_radius`,
+  `gather_agitate` and `gather_heat` shape the ball. The demo intro drives
+  it on every cloud at once.
 * **Swirls and swarms.** Atoms are carried by a smooth flow field, so
   neighbours move together: explosions twist and break into streams, and
   morphs first come apart into a drifting cloud, then swarm into the new
