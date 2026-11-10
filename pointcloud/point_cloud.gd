@@ -378,6 +378,13 @@ enum GatherMode {
 	set(v):
 		atom_min_px = v
 		_sp(&"atom_min_px", v)
+## Above 0, loose atoms nearer the viewer are drawn bigger and brighter and
+## farther ones smaller and dimmer, exaggerated by this power: gives a small
+## burst a sense of depth.
+@export var atom_depth := 0.0:
+	set(v):
+		atom_depth = v
+		_sp(&"atom_depth", v)
 @export var atom_max_px := 3.2:
 	set(v):
 		atom_max_px = v
@@ -511,7 +518,7 @@ func _init() -> void:
 			&"wobble_amplitude", &"wobble_frequency", &"wobble_speed", &"explode", &"explode_center",
 			&"dissolve", &"dissolve_direction", &"dissolve_directional", &"dissolve_spread",
 			&"dissolve_drift", &"dissolve_edge_color", &"glow_strength", &"morph", &"morph_stagger",
-			&"morph_arc", &"debris_lifetime", &"debris_gravity", &"beads", &"square", &"morph_swarm", &"atom_min_px", &"atom_max_px", &"bead_overlap", &"splats", &"clip_to_bounds", &"texture_tile", &"texture_offset"]:
+			&"morph_arc", &"debris_lifetime", &"debris_gravity", &"beads", &"square", &"morph_swarm", &"atom_min_px", &"atom_max_px", &"atom_depth", &"bead_overlap", &"splats", &"clip_to_bounds", &"texture_tile", &"texture_offset"]:
 		_sp(p, get(p))
 	_apply_element()
 

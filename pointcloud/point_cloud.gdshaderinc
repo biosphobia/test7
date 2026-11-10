@@ -86,6 +86,7 @@ uniform float explode_swirl = 0.9;
 uniform float explode_turbulence = 0.55;
 // Loose atoms never draw wider than this, even when quality is turned down.
 uniform float atom_max_px = 3.2;
+uniform float atom_depth = 0.0;            // > 0: loose atoms scale and shade with depth
 uniform float atom_min_px = 1.5;           // ...and never smaller than this
 // Share of an atom's colour that glows by itself in flight, so a cloud of
 // atoms keeps its colour instead of flickering light and dark.
@@ -818,7 +819,18 @@ void vertex() {
 	// close it flies to the camera or however sparse its part of the model.
 	// (Interior points are always held to it: they never have to close a surface.)
 	float loose = on_surface ? max(smoothstep(0.0, agap * 2.0, disp), fly) : 1.0;
-	float px_cap = mix(max_pixel_size, clamp(target_px * cover, atom_min_px, max(atom_max_px, atom_min_px)), shadow_pass ? 0.0 : loose);
+	// Depth: a loose atom nearer the viewer than the middle of its cloud is
+	// drawn bigger and brighter, one further away smaller and dimmer
+	// (exaggerated by atom_depth), so a burst reads as a volume, not a flat
+	// spray of equal dots.
+	float mid_z = -(MODELVIEW_MATRIX * vec4(bounds_min + bounds_size * 0.5, 1.0)).z;
+	float nearness = atom_depth > 0.0 ? clamp(pow(max(mid_z, 0.01) / max(-vp.z, 0.01), atom_depth), 0.45, 2.2) : 1.0;
+	float loose_px = clamp(target_px * cover, atom_min_px, max(atom_max_px, atom_min_px)) * nearness;
+	// A morphing atom eases back to its resting size while it flies in, so
+	// nothing changes at the moment it lands.
+	loose_px = mix(loose_px, target_px * cover, smoothstep(0.35, 1.0, morph_t));
+	c.rgb *= mix(1.0, clamp(sqrt(nearness), 0.5, 1.0), shadow_pass ? 0.0 : loose * (1.0 - smoothstep(0.35, 1.0, morph_t)));
+	float px_cap = mix(max_pixel_size, loose_px, shadow_pass ? 0.0 : loose);
 	px_cap = shadow_pass ? px_cap : min(px_cap, gather_cap);
 	POINT_SIZE = v_alive > 0.5 ? clamp(px, min(min_pixel_size, px_cap), px_cap) : 1.0;
 	if (shadow_pass && v_alive > 0.5) {
@@ -893,7 +905,7 @@ void fragment() {
 		// Beads only a few pixels wide can't show their roundness; their rims
 		// would just beat against the pixel grid (moire). Fade the bead
 		// shading in with on-screen size.
-		float detail = smoothstep(4.0, 11.0, v_px);
+		float detail = smoothstep(3.0, 8.0, v_px);
 		// Atoms in flight are lit as if facing the viewer: their own surface
 		// normals point everywhere once they scatter, which would flicker.
 		// (Tilted towards the sky, where the light usually is, so loose grains

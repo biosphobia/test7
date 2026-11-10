@@ -111,6 +111,7 @@ func _add_cloud(parent: Node3D, fairy: PointCloudData, gun: PointCloudData) -> P
 	c.morph_arc = 0.05
 	c.atom_min_px = 5.0
 	c.atom_max_px = 6.0
+	c.atom_depth = 7.0   # near atoms big and bright, far ones small and dim
 	parent.add_child(c)
 	_forms[c] = [fairy, gun]
 	# Warm both shapes so switching starts at once.
@@ -211,6 +212,8 @@ func _process(delta: float) -> void:
 		_blink = 1.0
 	_blink = maxf(_blink - delta * 7.0, 0.0)
 	_eye_node.scale.y = lerpf(1.0, 0.12, sin(_blink * PI) * fairy)
-	body.emission_strength = lerpf(0.12, 0.9, fairy)
-	wing_l.emission_strength = lerpf(0.1, 0.35, fairy)
+	# (dimmer while her atoms are loose: a bright cloud would wash out to white)
+	var calm := 1.0 - 0.75 * sin(clampf(_gun, 0.0, 1.0) * PI)
+	body.emission_strength = lerpf(0.12, 0.9, fairy) * calm
+	wing_l.emission_strength = lerpf(0.1, 0.35, fairy) * calm
 	wing_r.emission_strength = wing_l.emission_strength
