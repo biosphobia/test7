@@ -43,10 +43,13 @@ const PROXY_SHADER := preload("res://pointcloud/flat_proxy.gdshader")
 const PROXY_RES := 128
 
 ## Level of detail, shared by all clouds: the on-screen spacing (pixels) to aim
-## for between drawn points. Clouds draw only as many points as they need for
-## that and enlarge them to match. Raise it for speed (PointCloudQuality does
-## this automatically), lower it for detail.
-static var lod_spacing_px := 2.0
+## for between beads. Far away a cloud draws fewer points; up close every
+## point spawns extra beads (see max_amplification), so beads stay this far
+## apart at any distance. Raise it for speed (PointCloudQuality does this
+## automatically), lower it for finer beads.
+static var lod_spacing_px := 1.25
+## Most beads one cloud may process per frame (caps amplification up close).
+const MAX_DOTS_PER_CLOUD := 3000000
 ## Turns level of detail off everywhere (always draw every point).
 static var lod_enabled := true
 
@@ -77,19 +80,15 @@ static var _clock_frame := -1
 @export_tool_button("Sample source mesh", "PointMesh") var _sample_button := sample_source_mesh
 
 @export_group("Appearance")
-## Dots drawn per stored point. Each stored point becomes a small cluster of
-## dots spread evenly over its patch of surface; every dot has its own random
-## seed, so it shivers, dissolves and flies off as debris on its own. Raising
-## this makes surfaces finer and more seamless without making sampling, memory
-## or carving any slower; the GPU cost grows with stored points × density.
-@export_range(1, 16) var density := 1:
+## Most beads one stored point may spawn when seen up close. Up close each
+## point fills its patch of surface with extra beads so beads stay about
+## `lod_spacing_px` apart on screen; this caps how many.
+@export_range(1, 64) var max_amplification := 32:
 	set(v):
-		density = clampi(v, 1, 64)
-		_sp(&"density", density)
-		_update_point_size()
+		max_amplification = clampi(v, 1, 64)
 		if data and data.size() > 0:
 			_build_mesh(data.size())
-## World-space diameter of each point. 0 = use the data's suggested size.
+
 @export var point_size := 0.0:
 	set(v):
 		point_size = v
@@ -98,10 +97,24 @@ static var _clock_frame := -1
 	set(v):
 		point_size_multiplier = v
 		_update_point_size()
-@export var max_pixel_size := 48.0:
+@export var max_pixel_size := 256.0:
 	set(v):
 		max_pixel_size = v
 		_sp(&"max_pixel_size", v)
+## Draw every dot as a small lit bead (default). Resting beads overlap to
+## close the surface; flying beads shrink. Size and shading change smoothly
+## with how far a dot is "in flight", so morphs and debris never pop.
+## Off = flat surface discs (see `splats`) while resting.
+@export var beads := true:
+	set(v):
+		beads = v
+		_sp(&"beads", v)
+## Scales how much resting beads overlap. Lower = less overdraw (faster), but
+## gaps can appear; evenly sampled flat surfaces can go a bit below 1.
+@export_range(0.5, 2.0) var bead_overlap := 1.0:
+	set(v):
+		bead_overlap = v
+		_sp(&"bead_overlap", v)
 ## Draw each dot as a disc lying on the surface with exact per-pixel depth,
 ## so dots fuse into a continuous, solid-looking surface.
 @export var splats := true:
@@ -211,6 +224,62 @@ static var _clock_frame := -1
 		wobble_speed = v
 		_sp(&"wobble_speed", v)
 
+@export_group("Singularity")
+## 1 = every atom is packed into a small swarming ball at gather_center.
+## Animate it to 0: the ball explodes (atoms are blown out in jets), then
+## the model is built: atoms travel to their places along the axes, snapped
+## to a grid like pixels, sweeping outwards from the ball and bottom-up.
+@export_range(0.0, 1.0) var gather := 0.0:
+	set(v):
+		var was := gather
+		gather = v
+		_sp(&"gather", v)
+		if (was > 0.0) != (v > 0.0):
+			_update_aabb()
+## Where the ball is, in world space.
+@export var gather_center := Vector3.ZERO:
+	set(v):
+		gather_center = v
+		if is_inside_tree():
+			_sp(&"gather_center", to_local(v))
+## Radius of the ball.
+@export var gather_radius := 0.4:
+	set(v):
+		gather_radius = v
+		_sp(&"gather_radius", v / maxf(_avg_scale(), 1e-6) if is_inside_tree() else v)
+## Atoms this far from the ball are the last to leave it (sets the order in
+## which a scene unfolds).
+@export var gather_reach := 30.0:
+	set(v):
+		gather_reach = v
+		_sp(&"gather_reach", v)
+## How far the explosion throws the atoms.
+@export var gather_burst := 11.0:
+	set(v):
+		gather_burst = v
+		_sp(&"gather_burst", v)
+## The build starts with the atoms farthest from this world position (the
+## viewer) and works towards it; gather_reach is the distance of the farthest.
+@export var gather_eye := Vector3.ZERO:
+	set(v):
+		gather_eye = v
+		_sp(&"gather_eye", v)
+## 1 = this cloud is built last, whatever its position.
+@export_range(0.0, 1.0) var gather_last := 0.0:
+	set(v):
+		gather_last = v
+		_sp(&"gather_last", v)
+## 0..1: how violently the ball shakes.
+@export var gather_agitate := 0.0:
+	set(v):
+		gather_agitate = v
+		_sp(&"gather_agitate", v)
+## White-hot glow of the gathered atoms.
+@export var gather_heat := 0.0:
+	set(v):
+		gather_heat = v
+		_sp(&"gather_heat", v)
+
 @export_group("Explode")
 @export var explode := 0.0:
 	set(v):
@@ -274,6 +343,19 @@ static var _clock_frame := -1
 	set(v):
 		debris_lifetime = v
 		_sp(&"debris_lifetime", v)
+## What this cloud's atoms are made of: how they behave once knocked loose
+## (weight, bounce, whether they land and stay...). See PointElement.
+## Null = glowing embers that drift off and fade, using the debris_* values.
+@export var element: PointElement:
+	set(v):
+		element = v
+		_apply_element()
+## World height of the ground that loose atoms land on (elements with
+## `lands`). The cloud is assumed to stand upright.
+@export var floor_y := 0.0:
+	set(v):
+		floor_y = v
+		_apply_element()
 @export var debris_gravity := Vector3(0, -3, 0):
 	set(v):
 		debris_gravity = v
@@ -307,9 +389,14 @@ var _bind_bones := PackedInt32Array()
 var _bone_mats: Array[Transform3D] = []
 
 var _shadow_mat: ShaderMaterial
+var _finish_waiting := false   # morph done, waiting for the carve bake
+var _finish_wait := 0.0
 var _shadow_mm: MultiMesh
 var _shadow_inst := RID()
-var _drawn := Vector3i(-1, -1, -1)         # surface points, interior points, density
+## Beads per stored point this frame (set by level of detail).
+var density := 1
+var _target_px := -1.0
+var _drawn := Vector3i(-1, -1, -1)         # surface points, interior points, beads per point
 var _shadow_drawn := Vector3i(-1, -1, -1)
 var _has_debris := false
 var _state := PackedFloat32Array()
@@ -318,6 +405,7 @@ var _colors_dirty := false
 var _carves: Array[PackedFloat32Array] = []  # cx, cy, cz, t0, radius, force, ragged, seed
 var _carve_a := PackedVector4Array()
 var _carve_b := PackedVector4Array()
+var _carve_c := PackedVector4Array()   # xyz kick direction (local)
 var _last_carve_time := -100.0
 var _bake_task := -1
 var _bake_job: _BakeJob
@@ -355,6 +443,7 @@ func _init() -> void:
 	_mat = ShaderMaterial.new()
 	_shadow_mat = ShaderMaterial.new()
 	_apply_shader()
+	_shadow_mat.set_shader_parameter(&"amplify", false)
 	RenderingServer.instance_geometry_set_material_override(get_instance(), _mat.get_rid())
 	_impact_pos.resize(MAX_IMPACTS)
 	_impact_params.resize(MAX_IMPACTS)
@@ -363,6 +452,7 @@ func _init() -> void:
 	_sp(&"impact_params", _impact_params)
 	_carve_a.resize(MAX_CARVES)
 	_carve_b.resize(MAX_CARVES)
+	_carve_c.resize(MAX_CARVES)
 	_sp(&"carve_a", _carve_a)
 	_sp(&"carve_b", _carve_b)
 	_sp(&"carve_count", 0)
@@ -372,8 +462,9 @@ func _init() -> void:
 			&"wobble_amplitude", &"wobble_frequency", &"wobble_speed", &"explode", &"explode_center",
 			&"dissolve", &"dissolve_direction", &"dissolve_directional", &"dissolve_spread",
 			&"dissolve_drift", &"dissolve_edge_color", &"glow_strength", &"morph", &"morph_stagger",
-			&"morph_arc", &"debris_lifetime", &"debris_gravity", &"density", &"splats", &"clip_to_bounds", &"texture_tile", &"texture_offset"]:
+			&"morph_arc", &"debris_lifetime", &"debris_gravity", &"beads", &"bead_overlap", &"splats", &"clip_to_bounds", &"texture_tile", &"texture_offset"]:
 		_sp(p, get(p))
+	_apply_element()
 
 
 func _enter_tree() -> void:
@@ -404,6 +495,10 @@ func _process(delta: float) -> void:
 	_poll_grid_task()
 	_poll_prep()
 	_poll_bake()
+	if _finish_waiting:
+		_finish_wait += delta
+		if (_carves.is_empty() and _bake_task < 0) or _finish_wait >= 1.0:
+			_finish_morph()
 	_sync_flat_proxy()
 	_update_lod()
 	_sync_shadow_proxy()
@@ -494,17 +589,17 @@ func get_point_count() -> int:
 	return data.size() if data else 0
 
 
-## Number of dots at full detail (stored points × density).
+## Number of stored points (each drawn as one or more beads).
 func get_dot_count() -> int:
-	return get_point_count() * density
+	return get_point_count()
 
 
-## Number of dots actually drawn this frame after level of detail (main view,
-## not counting the shadow copy).
+## Upper bound of beads processed this frame (points drawn × beads per
+## point; unneeded, off-screen and back-facing ones are skipped early).
 func get_drawn_dot_count() -> int:
 	if not is_visible_in_tree() or _drawn.x < 0:
 		return 0
-	return (_drawn.x + _drawn.y) * density
+	return (_drawn.x + _drawn.y) * _drawn.z
 
 
 ## Re-uploads all point data after you changed `data` arrays from code.
@@ -555,22 +650,47 @@ func paint(world_pos: Vector3, radius: float, color: Color, hardness := 0.5) -> 
 ## debris_lifetime; the dots around the hole become its wall (normals facing
 ## into it, darkened like a cavity).
 ##
+## `kick` (world direction, length around 1) throws the debris that way on top
+## of the outward burst: pass the reverse of a bullet's direction and the
+## chips spray back out of the hole towards the shooter.
+##
 ## Costs almost nothing on the main thread: the carve is handed to the shader
 ## as a sphere, and a worker thread later folds batches of carves into the
 ## debris texture using exactly the same maths.
-func carve(world_pos: Vector3, radius: float, force := 2.0, ragged := 0.35) -> void:
+func carve(world_pos: Vector3, radius: float, force := 2.0, ragged := 0.35, kick := Vector3.ZERO) -> void:
 	if data == null or data.size() == 0:
 		return
+	if element:
+		radius /= maxf(element.hardness, 0.05)
+		force *= element.scatter
+		_apply_element()  # the ground height follows the cloud's position
 	if _carves.size() >= MAX_CARVES:
 		_bake_now()
 	var c := _world_to_rest(world_pos)
 	var seed := randi() & 0xFFFFFF
-	_carves.append(PackedFloat32Array([c.x, c.y, c.z, now(), radius / _avg_scale(), force, ragged, float(seed)]))
+	var lk := global_transform.basis.orthonormalized().inverse() * kick
+	_carves.append(PackedFloat32Array([c.x, c.y, c.z, now(), radius / _avg_scale(), force, ragged, float(seed),
+			lk.x, lk.y, lk.z]))
 	_last_carve_time = now()
 	_has_debris = true
 	_sp(&"has_debris", true)
 	_push_carves()
 	prepare_interaction()  # make sure the grid exists for baking
+
+
+func _apply_element() -> void:
+	if _mat == null:
+		return
+	var e := element
+	_sp(&"debris_lands", e != null and e.lands)
+	_sp(&"debris_bounce", e.bounce if e else 0.3)
+	_sp(&"debris_friction", e.friction if e else 0.4)
+	_sp(&"debris_drag", e.drag if e else 0.0)
+	_sp(&"debris_glow", e.glow if e else 1.0)
+	_sp(&"debris_lifetime", e.lifetime if e else debris_lifetime)
+	_sp(&"debris_gravity", Vector3(0, -e.gravity, 0) if e else debris_gravity)
+	if is_inside_tree():
+		_sp(&"debris_floor_y", (floor_y - global_position.y) / maxf(_avg_scale(), 1e-6))
 
 
 func _push_carves() -> void:
@@ -579,11 +699,14 @@ func _push_carves() -> void:
 			var k := _carves[i]
 			_carve_a[i] = Vector4(k[0], k[1], k[2], k[3])
 			_carve_b[i] = Vector4(k[4], k[5], k[6], k[7])
+			_carve_c[i] = Vector4(k[8], k[9], k[10], 0.0)
 		else:
 			_carve_a[i] = Vector4.ZERO
 			_carve_b[i] = Vector4.ZERO
+			_carve_c[i] = Vector4.ZERO
 	_sp(&"carve_a", _carve_a)
 	_sp(&"carve_b", _carve_b)
+	_sp(&"carve_c", _carve_c)
 	_sp(&"carve_count", _carves.size())
 	if _proxy_mat:
 		_proxy_mat.set_shader_parameter(&"carve_a", _carve_a)
@@ -598,7 +721,7 @@ func _poll_bake() -> void:
 		_finish_bake()
 	if _carves.is_empty() or _grid == null:
 		return
-	if _carves.size() >= CARVE_BAKE_AT or now() - _last_carve_time > 0.75:
+	if _carves.size() >= CARVE_BAKE_AT or now() - _last_carve_time > 0.75 or _finish_waiting:
 		_start_bake()
 
 
@@ -723,7 +846,8 @@ func explode_pulse(strength := 1.5, duration := 1.2) -> Tween:
 	explode_center = data.aabb.get_center() if data else Vector3.ZERO
 	var tw := create_tween()
 	tw.tween_property(self, "explode", strength, duration * 0.3).set_trans(Tween.TRANS_EXPO).set_ease(Tween.EASE_OUT)
-	tw.tween_property(self, "explode", 0.0, duration * 0.7).set_trans(Tween.TRANS_ELASTIC).set_ease(Tween.EASE_OUT)
+	# Settles without springing back and forth, so beads land once.
+	tw.tween_property(self, "explode", 0.0, duration * 0.7).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN_OUT)
 	return tw
 
 
@@ -845,7 +969,14 @@ func set_morph_target(t: PointCloudData) -> void:
 func _finish_morph() -> void:
 	if _tgt == null:
 		return
-	# Pending carves refer to the old point positions: fold them in first.
+	# Pending carves refer to the old point positions: fold them in first, on
+	# a worker thread. The morph stays at its last frame until that's done
+	# (it looks the same), so shooting during a morph never stalls a frame.
+	if not _carves.is_empty() and _finish_wait < 1.0:
+		_finish_waiting = true
+		return
+	_finish_waiting = false
+	_finish_wait = 0.0
 	_bake_now()
 	_cur = _tgt
 	_tgt = null
@@ -867,8 +998,8 @@ func _bind_current() -> void:
 		_bind_target(_cur)
 	_sp(&"use_skin", data.is_skinned() and _skin_in_use != null)
 	_sp(&"point_spacing", data.suggested_point_size / PointSampler.SIZE_FACTOR)
-	_sp(&"interior_scale", data.interior_point_size / data.suggested_point_size
-			if data.interior_point_size > 0.0 and data.suggested_point_size > 0.0 else 1.0)
+	_sp(&"interior_scale", _interior_scale_for(data))
+	_sp(&"backface_cull", data.closed and (_tgt == null or _tgt.data.closed))
 	_sp(&"bounds_min", data.aabb.position)
 	_sp(&"bounds_size", data.aabb.size)
 	_update_point_size()
@@ -880,6 +1011,11 @@ func _bind_current() -> void:
 
 
 func _bind_target(sh: _ShapeTex) -> void:
+	# Dots blend to the target's dot size as they travel, so nothing changes
+	# size when the morph completes and the target becomes the shape.
+	_sp(&"backface_cull", data != null and data.closed and sh.data.closed)
+	_sp(&"target_point_size", _point_size_for(sh.data))
+	_sp(&"target_interior_scale", _interior_scale_for(sh.data))
 	_sp(&"target_pos_tex", sh.pos)
 	_sp(&"target_col_tex", sh.col)
 	_sp(&"target_nrm_tex", sh.nrm)
@@ -998,7 +1134,7 @@ func _build_mesh(n: int) -> void:
 				_shadow_mm = mm
 				if _shadow_inst.is_valid():
 					RenderingServer.instance_set_base(_shadow_inst, mm.get_rid())
-		var instances := ceili(float(n * density) / CHUNK)
+		var instances := ceili(float(n * (max_amplification if i == 0 else 1)) / CHUNK)
 		if mm.instance_count != instances:
 			mm.instance_count = instances
 			for k in instances:
@@ -1026,11 +1162,16 @@ func _update_lod() -> void:
 	var f := 1.0
 	if lod and lod_enabled and not Engine.is_editor_hint():
 		var cam := get_viewport().get_camera_3d() if is_inside_tree() else null
-		if cam:
+		if cam and (cam.cull_mask & layers) == 0:
+			# The camera can't see this cloud (e.g. the first-person body):
+			# its own draw costs nothing, so don't amplify it.
+			f = 0.0
+		elif cam:
 			var box := global_transform * data.aabb
 			var cp := cam.global_position
 			var d := maxf(cp.distance_to(cp.clamp(box.position, box.end)), cam.near)
-			var view_h := get_viewport().get_visible_rect().size.y
+			# Atoms are sized in rendered pixels: count them at the 3D render scale.
+			var view_h := get_viewport().get_visible_rect().size.y * get_viewport().scaling_3d_scale
 			var px_per_unit := view_h / cam.size
 			if cam.projection == Camera3D.PROJECTION_PERSPECTIVE:
 				px_per_unit = view_h * 0.5 / tan(deg_to_rad(cam.fov) * 0.5) / d
@@ -1039,16 +1180,24 @@ func _update_lod() -> void:
 			if f < 1.0:
 				# Quantise to steps of 1/sqrt(2) so counts don't change every frame.
 				f = pow(2.0, floorf(log(maxf(f, 1e-9)) / log(2.0) * 2.0) / 2.0)
+	var target := lod_spacing_px * lod_spacing_scale
+	if target != _target_px:
+		_target_px = target
+		_sp(&"target_px", target)
+	# Closer than full detail: amplify (more, smaller beads per point).
+	var amp := clampi(ceili(f), 1, max_amplification) if f > 1.0 else 1
 	f = minf(f, 1.0)
-	var interior := _has_debris or dissolve > 0.0 or explode != 0.0 or morph > 0.0
+	var interior := _has_debris or dissolve > 0.0 or explode != 0.0 or morph > 0.0 or gather > 0.0
 	var a := clampi(ceili(ns * f), mini(ns, LOD_MIN_POINTS), ns)
 	var b := ceili(ni * f) if interior else 0
 	if _proxy_on and not _has_debris:
 		a = 0  # the proxy plane shows the intact surface
 		b = 0
-	_set_drawn(_multimesh, _mat, Vector3i(a, b, density), ns, false)
+	amp = mini(amp, maxi(1, MAX_DOTS_PER_CLOUD / maxi(a + b, 1)))
+	density = amp
+	_set_drawn(_multimesh, _mat, Vector3i(a, b, amp), ns, false)
 	var sa := clampi(ceili(a * SHADOW_DETAIL), mini(ns, LOD_MIN_POINTS / 2), ns)
-	_set_drawn(_shadow_mm, _shadow_mat, Vector3i(sa, ceili(b * SHADOW_DETAIL), density), ns, true)
+	_set_drawn(_shadow_mm, _shadow_mat, Vector3i(sa, ceili(b * SHADOW_DETAIL), 1), ns, true)
 
 
 func _set_drawn(mm: MultiMesh, mat: ShaderMaterial, drawn: Vector3i, ns: int, shadow: bool) -> void:
@@ -1058,9 +1207,10 @@ func _set_drawn(mm: MultiMesh, mat: ShaderMaterial, drawn: Vector3i, ns: int, sh
 		_shadow_drawn = drawn
 	else:
 		_drawn = drawn
-	var dots := (drawn.x + drawn.y) * density
-	mm.visible_instance_count = ceili(float(dots) / CHUNK)
+	var dots := (drawn.x + drawn.y) * drawn.z
+	mm.visible_instance_count = mini(ceili(float(dots) / CHUNK), mm.instance_count)
 	mat.set_shader_parameter(&"dot_count", dots)
+	mat.set_shader_parameter(&"density", drawn.z)
 	mat.set_shader_parameter(&"surface_count", ns)
 	mat.set_shader_parameter(&"surface_drawn", drawn.x)
 	mat.set_shader_parameter(&"lod_scale", sqrt(float(maxi(ns, 1)) / float(maxi(drawn.x, 1))))
@@ -1183,7 +1333,13 @@ static func _shared_chunk_mesh() -> ArrayMesh:
 
 func _update_aabb() -> void:
 	if data:
-		_set_custom_aabb(data.aabb)
+		var box := data.aabb
+		if gather > 0.0 and is_inside_tree():
+			# Gathered atoms are far from the model: keep the cloud from being
+			# culled while they're out there.
+			var r := (gather_burst * 9.0 + gather_radius) / maxf(_avg_scale(), 1e-6)
+			box = box.merge(AABB(to_local(gather_center) - Vector3.ONE * r, Vector3.ONE * r * 2.0))
+		_set_custom_aabb(box)
 
 
 func _set_custom_aabb(box: AABB) -> void:
@@ -1193,12 +1349,21 @@ func _set_custom_aabb(box: AABB) -> void:
 
 
 func _update_point_size() -> void:
+	_sp(&"point_size", _point_size_for(data))
+
+
+static func _interior_scale_for(d: PointCloudData) -> float:
+	if d and d.interior_point_size > 0.0 and d.suggested_point_size > 0.0:
+		return d.interior_point_size / d.suggested_point_size
+	return 1.0
+
+
+func _point_size_for(d: PointCloudData) -> float:
 	var s := point_size
 	if s <= 0.0:
-		s = data.suggested_point_size if data else 0.02
-	# Sub-dots share the stored point's area, so each one is smaller.
-	var dot := s / sqrt(float(density)) * (1.0 if density == 1 else 1.3)
-	_sp(&"point_size", dot * point_size_multiplier)
+		s = d.suggested_point_size if d else 0.02
+	# (Extra beads up close are shrunk in the shader.)
+	return s * point_size_multiplier
 
 
 func _reset_state() -> void:
@@ -1470,7 +1635,7 @@ static func _apply_carve(state: PackedFloat32Array, positions: PackedVector3Arra
 		var r_eff := r * (1.0 - ragged * _hash01(key))
 		if d <= r_eff:
 			var dir := (p - center) / d if d > 1e-6 else Vector3.UP
-			var vel := (dir + _rand_dir(key ^ 0x68E31DA4) * 0.6) * force * (0.4 + _hash01(key + 7))
+			var vel := (dir + _rand_dir(key ^ 0x68E31DA4) * 0.6 + Vector3(c[8], c[9], c[10])) * force * (0.4 + _hash01(key + 7))
 			state[k] = t0 + d / r * 0.08
 			state[k + 1] = vel.x
 			state[k + 2] = vel.y

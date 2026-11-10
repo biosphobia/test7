@@ -43,6 +43,10 @@ extends Resource
 ## them (carving, dissolve, explode, morph), and level of detail draws a
 ## prefix of each part.
 @export var surface_count := -1
+## False for open or thin-shell models (a vase, a leaf, a single plane): both
+## sides can be seen, so the renderer keeps and lights points facing away.
+## PointSampler works it out from the mesh.
+@export var closed := true
 
 
 func get_surface_count() -> int:
@@ -93,6 +97,25 @@ func resampled(count: int, rng_seed := 7) -> PointCloudData:
 			var k := i - new_ns
 			idx[i] = ns + k if ns + k < n else rng.randi_range(mini(ns, n - 1), n - 1)
 	var out := picked(idx)
+	if count > n:
+		# Repeats would sit exactly on top of their originals: spread each one
+		# over its original's patch of surface instead, so the bigger cloud is
+		# as evenly covered as a freshly sampled one.
+		var spacing := suggested_point_size / 1.6
+		var has_n := out.normals.size() == count
+		var pos := out.positions
+		for i in count:
+			if idx[i] == i:
+				continue
+			var nrm := out.normals[i] if has_n else Vector3.UP
+			if nrm.length_squared() < 0.01:
+				nrm = Vector3.UP
+			var t1 := nrm.cross(Vector3.RIGHT if absf(nrm.x) < 0.9 else Vector3.UP).normalized()
+			var t2 := nrm.cross(t1)
+			var r := sqrt(rng.randf()) * spacing
+			var a := rng.randf() * TAU
+			pos[i] += (t1 * cos(a) + t2 * sin(a)) * r
+		out.positions = pos
 	out.surface_count = new_ns if ns < n else -1
 	out.suggested_point_size = suggested_point_size * sqrt(float(n) / float(count))
 	return out
@@ -132,6 +155,7 @@ func picked(indices: PackedInt32Array) -> PointCloudData:
 				out.bone_weights[i * 4 + k] = bone_weights[j * 4 + k]
 	out.aabb = aabb
 	out.suggested_point_size = suggested_point_size
+	out.closed = closed
 	return out
 
 
@@ -189,6 +213,7 @@ func merge(other: PointCloudData, xform := Transform3D.IDENTITY) -> void:
 	bone_indices = re.bone_indices
 	bone_weights = re.bone_weights
 	surface_count = surf.size()
+	closed = closed and o.closed
 	recompute_aabb()
 
 

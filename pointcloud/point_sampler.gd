@@ -72,6 +72,38 @@ static func snapshot(mesh: Mesh, materials: Array = []) -> Dictionary:
 	return {"surfaces": surfaces, "aabb": mesh.get_aabb()}
 
 
+## True if every triangle edge is shared by another triangle (a watertight
+## model). Open or thin-shell meshes can be seen from both sides.
+static func is_closed(snap: Dictionary) -> bool:
+	var edges := {}
+	var q := 1.0 / maxf((snap["aabb"] as AABB).get_longest_axis_size() * 1e-5, 1e-9)
+	for info in snap["surfaces"]:
+		var arrays: Array = info["arrays"]
+		if arrays.is_empty():
+			continue
+		var verts: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
+		var index = arrays[Mesh.ARRAY_INDEX]
+		var has_index: bool = index != null and index.size() > 0
+		var n: int = index.size() if has_index else verts.size()
+		var keys := PackedInt64Array()
+		keys.resize(verts.size())
+		for i in verts.size():
+			# Weld by position: UV seams and hard edges duplicate vertices.
+			keys[i] = hash(Vector3i((verts[i] * q).round()))
+		for t in range(0, n - 2, 3):
+			for e in 3:
+				var a: int = keys[index[t + e] if has_index else t + e]
+				var b: int = keys[index[t + (e + 1) % 3] if has_index else t + (e + 1) % 3]
+				if a == b:
+					continue
+				var k := Vector2i(mini(a, b), maxi(a, b))
+				edges[k] = edges.get(k, 0) + 1
+	for k in edges:
+		if edges[k] == 1:
+			return false
+	return not edges.is_empty()
+
+
 ## Samples a snapshot() of a mesh. Pure data work: safe on worker threads.
 static func from_snapshot(snap: Dictionary, count: int, opts: Dictionary = {}) -> PointCloudData:
 	var out := PointCloudData.new()
@@ -377,6 +409,7 @@ static func from_snapshot(snap: Dictionary, count: int, opts: Dictionary = {}) -
 		out.interior_point_size *= xf.basis.get_scale().x
 		out.curvatures = PointCloudData.transformed_tensors(out.curvatures, xf.basis)
 	out.recompute_aabb()
+	out.closed = is_closed(snap)
 	return out
 
 

@@ -1,8 +1,16 @@
 class_name PointCloudQuality
 extends Node
-## Keeps the frame rate at `target_fps` by trading point-cloud detail and
-## render resolution. Add one to your scene (the demo does).
+## Sets the 3D render resolution for point clouds and, optionally, keeps the
+## frame rate at `target_fps` by trading detail. Add one to your scene (the
+## demo does).
 ##
+## Resolution: atoms are sized in pixels, so the number drawn grows with the
+## resolution. The 3D view is rendered at most `max_render_height` pixels high
+## (times `resolution_scale`) and upscaled; the picture keeps its look while a
+## 1440p screen costs no more than a 800p one.
+##
+## Automatic detail (`enabled`, off by default): detail never changes behind
+## the player's back unless this is on.
 ## It measures the GPU's render time each frame. When over budget it steps
 ## down in the order that's least visible: fewer, larger points up to
 ## `soft_spacing_px`, then a lower 3D render scale (upscaled with FSR), then
@@ -11,12 +19,17 @@ extends Node
 @export var target_fps := 60.0
 ## Fraction of the frame budget to aim for, leaving headroom for spikes.
 @export_range(0.5, 1.0) var budget_fraction := 0.85
-@export var min_spacing_px := 1.6
+@export var min_spacing_px := 1.25
 ## Point spacing reached before resolution is lowered.
-@export var soft_spacing_px := 3.5
+@export var soft_spacing_px := 2.5
 @export var max_spacing_px := 6.0
 @export var min_render_scale := 0.6
-@export var enabled := true
+## Automatic detail. Off: detail and resolution stay where they were set.
+@export var enabled := false
+## The 3D view is rendered at most this many pixels high, then upscaled.
+@export var max_render_height := 800.0
+## Extra factor on the render resolution (an option for slow GPUs).
+@export_range(0.4, 1.0) var resolution_scale := 1.0
 
 var render_scale := 1.0
 var _avg_ms := 0.0
@@ -44,6 +57,9 @@ func _ready() -> void:
 
 func _process(delta: float) -> void:
 	if not enabled:
+		render_scale = base_scale()
+		_avg_ms = delta * 1000.0 if _avg_ms == 0.0 else lerpf(_avg_ms, delta * 1000.0, 0.1)
+		_apply()
 		return
 	if _warmup > 0.0:  # ignore start-up hitches
 		_warmup -= delta
@@ -101,11 +117,17 @@ func _improve() -> void:
 	var spacing := PointCloud.lod_spacing_px
 	if spacing > soft_spacing_px:
 		PointCloud.lod_spacing_px = maxf(spacing / 1.15, soft_spacing_px)
-	elif render_scale < 1.0:
-		render_scale = minf(render_scale * 1.15, 1.0)
+	elif render_scale < base_scale():
+		render_scale = minf(render_scale * 1.15, base_scale())
 	elif spacing > min_spacing_px:
 		PointCloud.lod_spacing_px = maxf(spacing / 1.15, min_spacing_px)
 	_apply()
+
+
+## Render scale that keeps the 3D view within max_render_height.
+func base_scale() -> float:
+	var h := float(_vp.get_visible_rect().size.y) if _vp else max_render_height
+	return clampf(minf(1.0, max_render_height / maxf(h, 1.0)) * resolution_scale, 0.3, 1.0)
 
 
 func _apply() -> void:

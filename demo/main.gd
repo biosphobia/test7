@@ -3,9 +3,6 @@ extends Node3D
 ## player and the enemy. Aim at something and play with it.
 
 const MORPH_POINTS := 400000
-## Dots drawn per stored point (see PointCloud.density). 1 is fastest; the
-## surface discs already close up without extra dots.
-const DETAIL := 1
 const GROUND_SIZE := 50.0
 const GROUND_TILE := 5.0
 
@@ -23,6 +20,23 @@ var _info: Label
 var _status: Label
 var _fire_cd := 0.0
 var _paint_hue := 0.0
+# Intro: everything starts packed into a singularity in the middle of the screen.
+enum Intro { NONE, WAIT, BANG, ENTER }
+var intro := Intro.NONE
+## Set to 0..1 to drive the hover from code (tests); -1 = follow the mouse.
+var intro_hover_override := -1.0
+var _intro_cam: Camera3D
+var _intro_centre := Vector3.ZERO
+var _intro_prox := 0.0
+var _intro_crack := 0.0
+var _intro_jolt := 0.0
+var _intro_shake := 0.0
+var _intro_flash := 0.0
+var _intro_rays: ColorRect
+var _hud_layer: CanvasLayer
+const BULLET_SPEED := 90.0
+const BULLET_POOL := 8
+var _bullets: Array[Dictionary] = []   # pooled bullets, each a small cloud of atoms
 
 
 func _ready() -> void:
@@ -42,9 +56,6 @@ func _ready() -> void:
 
 	for c in get_tree().get_nodes_in_group(&"point_clouds"):
 		var cloud := c as PointCloud
-		# Floor tiles: finer dots for hole walls and effects. With the flat proxy
-		# they're only drawn around holes, so it costs almost nothing.
-		cloud.density = 4 if cloud.flat_proxy else DETAIL
 		cloud.prepare_interaction()
 	# Warm the morph cache in the background so E reacts instantly.
 	for p in props:
@@ -56,6 +67,152 @@ func _ready() -> void:
 	add_child(quality)
 	_build_hud()
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+	# Played when the demo is the game itself, not when a test embeds it.
+	if get_parent() == get_tree().root:
+		start_intro()
+
+
+# ================================================================ intro
+
+## Packs every atom in the scene (ground, props, worm, player) into a small
+## swarming ball in the middle of the screen and waits for a click on it.
+func start_intro() -> void:
+	intro = Intro.WAIT
+	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+	player.set_physics_process(false)
+	_hud_layer.visible = false
+	_intro_cam = Camera3D.new()
+	_intro_cam.fov = 60.0
+	_intro_cam.far = 300.0
+	add_child(_intro_cam)
+	_intro_cam.global_position = player.global_position + Vector3(0, 2.8, 7.5)
+	_intro_cam.look_at(Vector3(0, 1.4, 0))
+	_intro_cam.current = true
+	_intro_centre = _intro_cam.global_position - _intro_cam.global_basis.z * 7.0
+	for c in get_tree().get_nodes_in_group(&"point_clouds"):
+		var cloud := c as PointCloud
+		cloud.gather_center = _intro_centre
+		cloud.gather_reach = 46.0
+		cloud.gather_burst = 6.0
+		cloud.gather = 1.0
+	# Beams of light that break out of the ball when it's clicked.
+	var layer := CanvasLayer.new()
+	layer.layer = 0
+	add_child(layer)
+	_intro_rays = ColorRect.new()
+	_intro_rays.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_intro_rays.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_intro_rays.material = ShaderMaterial.new()
+	(_intro_rays.material as ShaderMaterial).shader = preload("res://demo/singularity_rays.gdshader")
+	layer.add_child(_intro_rays)
+
+
+## Clicked: the ball cracks five times. With each crack two beams of light
+## break out, the ball jolts and the camera moves in. Then it explodes, and
+## the world is built from the scattered atoms, the player last. Finally the
+## camera drops into the player's head and control begins.
+func intro_bang() -> void:
+	if intro != Intro.WAIT:
+		return
+	intro = Intro.BANG
+	var tw := create_tween()
+	var gaps := [0.0, 0.8, 0.65, 0.5, 0.4]
+	for i in gaps.size():
+		tw.tween_interval(gaps[i] + 0.001)
+		tw.tween_callback(_intro_crack_step.bind(i))
+	tw.tween_interval(0.5)
+	tw.tween_callback(_intro_release)
+	# The flash of the explosion; the beams die with it.
+	tw.tween_property(self, "_intro_flash", 0.0, 0.8).from(1.0).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+	tw.parallel().tween_property(self, "_intro_crack", 0.0, 0.5)
+	tw.tween_interval(11.6)
+	tw.tween_callback(func(): intro = Intro.ENTER)
+	# Into the player's eyes.
+	tw.tween_method(func(k: float):
+		var a := _intro_cam.global_transform
+		var b := player.camera.global_transform
+		_intro_cam.global_transform = a.interpolate_with(b, k)
+		_intro_cam.fov = lerpf(_intro_cam.fov, player.camera.fov, k), 0.0, 1.0, 1.3).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN)
+	tw.tween_callback(_end_intro)
+
+
+func _intro_crack_step(i: int) -> void:
+	_intro_jolt = 1.0
+	var tw := create_tween()
+	tw.tween_property(self, "_intro_crack", (i + 1) / 5.0, 0.12)
+	_intro_shake = maxf(_intro_shake, 0.22)
+	# The camera lurches closer: a quarter of the remaining distance each time.
+	var to := _intro_cam.global_position.lerp(_intro_centre, 0.25)
+	tw.parallel().tween_property(_intro_cam, "global_position", to, 0.3).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+
+
+func _intro_release() -> void:
+	for c in get_tree().get_nodes_in_group(&"point_clouds"):
+		var cloud := c as PointCloud
+		cloud.gather_last = 1.0 if player.is_ancestor_of(cloud) else 0.0
+		cloud.create_tween().tween_property(cloud, "gather", 0.0, 12.0)
+	# The blast shakes the camera hard and throws it back.
+	_intro_shake = 1.0
+	var back := _intro_cam.global_position + _intro_cam.global_basis.z * 6.0
+	create_tween().tween_property(_intro_cam, "global_position", back, 1.0) \
+			.set_trans(Tween.TRANS_QUART).set_ease(Tween.EASE_OUT)
+	for c in get_tree().get_nodes_in_group(&"point_clouds"):
+		(c as PointCloud).gather_eye = back
+
+
+func _end_intro() -> void:
+	intro = Intro.NONE
+	player.camera.current = true
+	_intro_cam.queue_free()
+	_intro_cam = null
+	_intro_rays.get_parent().queue_free()
+	_intro_rays = null
+	player.set_physics_process(true)
+	_hud_layer.visible = true
+	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+
+
+func _update_intro(delta: float) -> void:
+	# The ball loosens and glows as the mouse comes near the middle.
+	var size := get_viewport().get_visible_rect().size
+	var prox := intro_hover_override
+	if prox < 0.0:
+		var d := (get_viewport().get_mouse_position() - size * 0.5).length() / (size.y * 0.45)
+		prox = clampf(1.0 - d, 0.0, 1.0)
+	if intro != Intro.WAIT:
+		prox = 0.0  # clicked: it pulls tight again before it cracks
+	_intro_prox = lerpf(_intro_prox, prox, 1.0 - exp(-6.0 * delta))
+	_intro_jolt = lerpf(_intro_jolt, 0.0, 1.0 - exp(-7.0 * delta))
+	# Screen shake: a jolt per crack, a long violent one for the explosion.
+	_intro_shake = lerpf(_intro_shake, 0.0, 1.0 - exp(-2.4 * delta))
+	if _intro_cam:
+		_intro_cam.h_offset = randf_range(-1.0, 1.0) * _intro_shake * 0.35
+		_intro_cam.v_offset = randf_range(-1.0, 1.0) * _intro_shake * 0.35
+	var cracking := clampf(0.12 * _intro_crack + _intro_jolt, 0.0, 1.0)
+	var heat := 0.3 + 1.2 * _intro_prox + 0.5 * _intro_crack + 0.8 * _intro_jolt
+	var radius := 0.15 * (1.0 + 0.7 * _intro_prox)
+	for c in get_tree().get_nodes_in_group(&"point_clouds"):
+		var cloud := c as PointCloud
+		if cloud.gather <= 0.0:
+			continue
+		cloud.gather_center = _intro_centre  # (moving clouds: keep it in place)
+		cloud.gather_radius = radius
+		cloud.gather_heat = heat
+		cloud.gather_agitate = cracking
+	if _intro_rays and _intro_cam:
+		var m := _intro_rays.material as ShaderMaterial
+		var c2 := _intro_cam.unproject_position(_intro_centre)
+		var edge := _intro_cam.unproject_position(_intro_centre + _intro_cam.global_basis.x * radius)
+		# Canvas FRAGCOORD is in window pixels, y down like the canvas.
+		m.set_shader_parameter(&"centre", c2)
+		m.set_shader_parameter(&"ball_px", maxf(c2.distance_to(edge), 2.0))
+		m.set_shader_parameter(&"crack", _intro_crack)
+		m.set_shader_parameter(&"flash", _intro_flash)
+
+
+func _intro_click_hits(pos: Vector2) -> bool:
+	var size := get_viewport().get_visible_rect().size
+	return (pos - size * 0.5).length() < size.y * 0.16
 
 
 # ================================================================ world
@@ -95,6 +252,7 @@ func _setup_environment() -> void:
 	post_mat.shader = preload("res://demo/blend_post.gdshader")
 	blend_post.material = post_mat
 	post.add_child(blend_post)
+	blend_post.visible = false  # off by default: it would soften the beads
 
 	var sun := DirectionalLight3D.new()
 	sun.rotation_degrees = Vector3(-48, -35, 0)
@@ -145,9 +303,11 @@ func _build_ground() -> void:
 			cloud.texture_offset = Vector3(-1, 0, -1) - center
 			cloud.debris_gravity = Vector3(0, -8, 0)
 			cloud.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF  # nothing below it to shade
-			# While intact, draw each tile as one textured plane; dots only for
-			# holes, debris and effects.
-			cloud.flat_proxy = true
+			# Flat and textured: resting floor beads are invisible either way,
+			# so a few extra beads up close are plenty.
+			cloud.max_amplification = 1
+			cloud.lod_spacing_scale = 4.0
+			cloud.bead_overlap = 0.8  # evenly spread flat tiles: less overlap is enough
 			body.add_child(cloud)
 			_ground_tiles.append(cloud)
 	body.set_meta("cloud", _ground_tiles[0])
@@ -216,6 +376,21 @@ func _build_props() -> void:
 		var p := _make_prop("Monolith %d" % (i + 1), d, Vector3(6 + i * 2.5, 2.0, -4 - i * 2.0), mb)
 		p.rotation.y = 0.4 * i
 
+	# A block of a different element: stone. Its atoms are heavy grains that
+	# are thrown out by a hit, fall, bounce and stay where they land.
+	var rock_rng := RandomNumberGenerator.new()
+	rock_rng.seed = 11
+	var rock := PointSampler.box(Vector3(2, 2, 2), 400000, {"fill": PointSampler.Fill.SOLID,
+		"color_fn": func(_p, _n, _c, inside: bool) -> Color:
+			var g := rock_rng.randf_range(0.42, 0.62) * (0.8 if inside else 1.0)
+			return Color(g * 0.92, g * 0.97, g * 1.08)})
+	var rb := BoxShape3D.new()
+	rb.size = Vector3(2, 2, 2)
+	var rock_body := _make_prop("Stone block", rock, Vector3(4.5, 1.0, 2.0), rb)
+	var rock_cloud := rock_body.get_meta("cloud") as PointCloud
+	rock_cloud.element = PointElement.stone()
+	rock_cloud.roughness = 0.95
+
 	# A floating jelly orb that wobbles all the time.
 	var orb := PointSampler.sphere(1.0, 250000, {"color_fn": func(p: Vector3, _n, _c, _in) -> Color:
 		return Color(0.75, 0.35, 1.0).lerp(Color(0.2, 0.9, 1.0), clampf(p.y * 0.5 + 0.5, 0.0, 1.0))})
@@ -276,7 +451,11 @@ func _crate_image() -> Image:
 # ================================================================ interaction
 
 func _process(delta: float) -> void:
+	if intro != Intro.NONE:
+		_update_intro(delta)
+		return
 	_update_target()
+	_update_bullets(delta)
 	_fire_cd -= delta
 	if Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
 		if Input.is_action_pressed("shoot") and _fire_cd <= 0.0:
@@ -289,6 +468,11 @@ func _process(delta: float) -> void:
 
 
 func _unhandled_input(event: InputEvent) -> void:
+	if intro != Intro.NONE:
+		if intro == Intro.WAIT and event is InputEventMouseButton and event.pressed \
+				and event.button_index == MOUSE_BUTTON_LEFT and _intro_click_hits(event.position):
+			intro_bang()
+		return
 	if event.is_action_pressed("ui_cancel"):
 		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 	elif event is InputEventMouseButton and event.pressed and Input.mouse_mode != Input.MOUSE_MODE_CAPTURED:
@@ -310,16 +494,15 @@ func _unhandled_input(event: InputEvent) -> void:
 			target.wobble_amplitude = 0.0 if target.wobble_amplitude > 0.0 else 0.08
 		elif event.is_action_pressed("heal"):
 			target.heal(1.5)
-		elif event.is_action_pressed("density_up"):
-			target.density = mini(target.density * 2, 16)
-		elif event.is_action_pressed("density_down"):
-			target.density = maxi(target.density / 2, 1)
 	if event.is_action_pressed("detail_down") or event.is_action_pressed("detail_up"):
 		quality.enabled = false
 		var f := 1.25 if event.is_action_pressed("detail_down") else 0.8
 		PointCloud.lod_spacing_px = clampf(PointCloud.lod_spacing_px * f, 1.0, 10.0)
+	elif event.is_action_pressed("res_down") or event.is_action_pressed("res_up"):
+		var f := 0.85 if event.is_action_pressed("res_down") else 1.0 / 0.85
+		quality.resolution_scale = clampf(quality.resolution_scale * f, 0.4, 1.0)
 	elif event.is_action_pressed("detail_auto"):
-		quality.enabled = true
+		quality.enabled = not quality.enabled
 	elif event.is_action_pressed("toggle_blend"):
 		blend_post.visible = not blend_post.visible
 	elif event.is_action_pressed("switch_renderer") and not OS.has_feature("editor"):
@@ -350,13 +533,86 @@ func _update_target() -> void:
 		target_hit = hit["position"]
 
 
+## Fires a bullet (itself a little cloud of atoms) at whatever is under the
+## crosshair. The hit lands when the bullet arrives.
 func shoot() -> void:
 	if target == null:
 		return
-	target.carve(target_hit, 0.32, 2.5)
-	target.impact(target_hit, 0.1, 5.0, 0.3, 3.0)
-	if target_body.has_meta("on_hit"):
-		target_body.get_meta("on_hit").call(target_hit)
+	var cam := player.camera
+	var from := cam.global_position + cam.global_basis * Vector3(0.16, -0.12, -0.6)
+	var b := _free_bullet()
+	if b.is_empty():
+		_apply_hit(target, target_body, target_hit, (target_hit - from).normalized())
+		return
+	var cloud: PointCloud = b["cloud"]
+	cloud.explode = 0.0
+	cloud.global_position = from
+	cloud.visible = true
+	b["busy"] = true
+	b["from"] = from
+	b["to"] = target_hit
+	b["t"] = 0.0
+	b["dur"] = maxf(from.distance_to(target_hit) / BULLET_SPEED, 0.001)
+	b["target"] = target
+	b["body"] = target_body
+
+
+func _free_bullet() -> Dictionary:
+	for b in _bullets:
+		if not b["busy"]:
+			return b
+	if _bullets.size() >= BULLET_POOL:
+		return {}
+	var cloud := PointCloud.new()
+	cloud.data = _bullet_data()
+	cloud.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	cloud.emission_strength = 0.8
+	cloud.visible = false
+	add_child(cloud)
+	var b := {"cloud": cloud, "busy": false}
+	_bullets.append(b)
+	return b
+
+
+func _bullet_data() -> PointCloudData:
+	if not has_meta("bullet_data"):
+		set_meta("bullet_data", PointSampler.sphere(0.05, 1500, {"color": Color(1.0, 0.82, 0.35)}))
+	return get_meta("bullet_data")
+
+
+func _update_bullets(delta: float) -> void:
+	for b in _bullets:
+		if not b["busy"] or not b.has("dur"):
+			continue
+		var cloud: PointCloud = b["cloud"]
+		b["t"] += delta
+		var k: float = b["t"] / b["dur"]
+		if k < 1.0:
+			cloud.global_position = (b["from"] as Vector3).lerp(b["to"], k)
+			continue
+		if b["dur"] > 0.0:
+			# Arrived: hit the target, and the bullet itself bursts into its atoms.
+			cloud.global_position = b["to"]
+			var dir := ((b["to"] as Vector3) - (b["from"] as Vector3)).normalized()
+			if is_instance_valid(b["target"]):
+				_apply_hit(b["target"], b["body"], b["to"], dir)
+			b["dur"] = -1.0
+			var tw := cloud.create_tween()
+			tw.tween_property(cloud, "explode", 0.45, 0.22).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+			tw.tween_callback(func():
+				cloud.visible = false
+				b["busy"] = false)
+
+
+func _apply_hit(cloud: PointCloud, body: CollisionObject3D, hit: Vector3, dir: Vector3) -> void:
+	# For elements with real physics, the blast is centred a little inside the
+	# surface, so the chips are thrown back out towards the shooter.
+	var physical := cloud.element != null and cloud.element.lands
+	cloud.carve(hit + dir * 0.12 if physical else hit, 0.32, 2.5, 0.35, -dir * 1.1 if physical else Vector3.ZERO)
+	if not physical:
+		cloud.impact(hit, 0.1, 5.0, 0.3, 3.0)  # stone doesn't ripple
+	if is_instance_valid(body) and body.has_meta("on_hit"):
+		body.get_meta("on_hit").call(hit)
 
 
 ## The "turn into a sphere" target of a cloud: a Callable, so it is generated
@@ -380,16 +636,16 @@ func morph_target() -> void:
 		# Anything else morphs into a sphere and back to its own shape.
 		if not target.has_meta("home"):
 			target.set_meta("home", target.data)
-			target.morph_to(_sphere_target(target), 1.8)
+			target.morph_to(_sphere_target(target), 3.2)
 		else:
-			target.morph_to(target.get_meta("home"), 1.8)
+			target.morph_to(target.get_meta("home"), 3.2)
 			target.remove_meta("home")
 		return
 	var shapes: Array[PointCloudData] = body.get_meta("shapes")
 	var colliders: Array[Shape3D] = body.get_meta("colliders")
 	var i: int = (body.get_meta("shape_index") + 1) % shapes.size()
 	body.set_meta("shape_index", i)
-	target.morph_to(shapes[i], 2.2, false)
+	target.morph_to(shapes[i], 3.6, false)
 	(body.get_child(0) as CollisionShape3D).shape = colliders[i]
 
 
@@ -398,6 +654,7 @@ func morph_target() -> void:
 func _build_hud() -> void:
 	var layer := CanvasLayer.new()
 	add_child(layer)
+	_hud_layer = layer
 	_info = Label.new()
 	_info.position = Vector2(16, 12)
 	_info.add_theme_color_override("font_shadow_color", Color.BLACK)
@@ -407,8 +664,8 @@ func _build_hud() -> void:
 		"Aim at something, then:",
 		"  E morph · Q dissolve / reassemble · F explode",
 		"  V vibrate · G wobble · H heal holes",
-		"  [ / ] fewer / more dots per point",
-		"- / = less / more detail · 0 automatic (holds 60 fps)",
+		"[ / ] lower / raise resolution · - / = less / more detail",
+		"0 automatic detail on/off (off by default)",
 		"F9 smoothing filter on/off · F10 switch renderer (Compatibility is faster)",
 		"R restore everything · Esc free mouse",
 	])
@@ -452,12 +709,12 @@ func _update_hud() -> void:
 		if target == worm.cloud:
 			aimed += " (hp %d)" % worm.hp
 	if target:
-		aimed += "\n%s dots (%d per point)" % [_group_digits(target.get_dot_count()), target.density]
+		aimed += "\n%s points · up to %d beads each" % [_group_digits(target.get_dot_count()), target.density]
 	var renderer := RenderingServer.get_current_rendering_method()
 	var hint := ""
 	if quality.is_maxed_out() and renderer != "gl_compatibility":
 		hint = "\nstill slow: press F10 for the lighter renderer"
-	_status.text = "%d FPS · %s\n%s of %s dots drawn\n%s%s\ntarget: %s" % [Engine.get_frames_per_second(),
+	_status.text = "%d FPS · %s\n%s bead slots for %s points\n%s%s\ntarget: %s" % [Engine.get_frames_per_second(),
 		renderer.replace("gl_", "").replace("_", " "), _group_digits(drawn), _group_digits(total),
 		quality.describe(), hint, aimed]
 
@@ -483,8 +740,8 @@ func _setup_input() -> void:
 		"move_forward": KEY_W, "move_back": KEY_S, "move_left": KEY_A, "move_right": KEY_D,
 		"jump": KEY_SPACE, "sprint": KEY_SHIFT, "morph": KEY_E, "dissolve": KEY_Q,
 		"explode": KEY_F, "vibrate": KEY_V, "wobble": KEY_G, "heal": KEY_H, "restore": KEY_R,
-		"density_down": KEY_BRACKETLEFT, "density_up": KEY_BRACKETRIGHT,
 		"detail_down": KEY_MINUS, "detail_up": KEY_EQUAL, "detail_auto": KEY_0,
+		"res_down": KEY_BRACKETLEFT, "res_up": KEY_BRACKETRIGHT,
 		"switch_renderer": KEY_F10, "toggle_blend": KEY_F9,
 	}
 	for action in keys:

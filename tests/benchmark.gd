@@ -58,6 +58,13 @@ func _process(_delta: float) -> void:
 				drawn += c.get_drawn_dot_count()
 			else:
 				drawn += (c as PointCloud).get_dot_count()
+		if "--per-cloud" in OS.get_cmdline_user_args():
+			var rows := []
+			for c in get_tree().get_nodes_in_group(&"point_clouds"):
+				rows.append([(c as PointCloud).get_drawn_dot_count(), str(c.get_path()).get_file(), (c as PointCloud).density])
+			rows.sort_custom(func(a, b): return a[0] > b[0])
+			for r in rows.slice(0, 12):
+				print("CLOUD %-16s slots=%8d beads/point=%d" % [r[1], r[0], r[2]])
 		print("BENCH avg_ms=%.0f worst_ms=%.0f drawn_dots=%d total_dots=%d gpu_ms=%.1f renderer=%s" % [ms, _worst / 1000.0, drawn, total,
 			RenderingServer.viewport_get_measured_render_time_gpu(get_viewport().get_viewport_rid()),
 			RenderingServer.get_current_rendering_method()])
