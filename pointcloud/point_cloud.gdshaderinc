@@ -397,12 +397,24 @@ void vertex() {
 		}
 	}
 
-	// --- morph into the target cloud, each point on its own schedule and arc
+	// --- morph into the target cloud. Three acts: the whole object comes apart
+	// into a drifting cloud of atoms, hangs there, then the atoms swarm into
+	// the new shape, clump by clump.
 	if (morph > 0.0) {
-		// Departure order: neighbouring atoms leave together, in clumps.
+		// Neighbouring atoms share a schedule, so they leave and land in clumps.
 		float grp = 0.5 + 0.5 * flow(rest * 1.1, 0.0).x;
 		float sched = mix(seed, grp, 0.65);
-		float t = clamp((morph - sched * morph_stagger) / (1.0 - morph_stagger), 0.0, 1.0);
+		float spread = min(morph_stagger, 0.5);
+		float t_leave = sched * 0.24 * spread / 0.5;            // starts to shrink
+		float t_gather = 0.46 + sched * 0.28 * spread / 0.5;    // starts to fly in
+		float t_land = t_gather + 0.2;                          // at its new place
+		// An atom shrinks where it sits before it moves, and grows only once it
+		// has landed: nothing big is ever out of place.
+		float shrink = smoothstep(t_leave, t_leave + 0.035, morph);
+		float grow = smoothstep(t_land, t_land + 0.04, morph);
+		float s1 = clamp((morph - t_leave - 0.035) / 0.3, 0.0, 1.0);
+		s1 = 1.0 - (1.0 - s1) * (1.0 - s1) * (1.0 - s1);       // bursts out, then slows
+		float t = clamp((morph - t_gather) / 0.2, 0.0, 1.0);
 		t = t * t * (3.0 - 2.0 * t);
 		morph_t = t;
 		vec3 tn = texelFetch(target_nrm_tex, tc, 0).xyz;
@@ -412,16 +424,19 @@ void vertex() {
 		vec3 tp = texelFetch(target_pos_tex, tc, 0).xyz + sub_offset(tn, sub, spin, uint(id));
 		vec4 tcol = texelFetch(target_col_tex, tc, 0);
 		vec3 from = p;
-		float w = sin(t * PI);
-		p = mix(from, tp, t);
-		// Swarm: on the way, atoms ride a slowly changing flow field (big
-		// streams plus smaller eddies) and scatter a little.
-		vec3 sw = flow(p * 0.8 + grp * 3.0, cloud_time * 1.3 + grp * 6.0)
-				+ 0.45 * flow(p * 2.3 + seed, cloud_time * 2.1);
-		p += (sw * morph_swarm + rand_dir(uid * 3u + 17u) * morph_arc * 0.4) * w;
-		// Small while travelling; full size only within a spacing of either end.
-		float mgap = point_spacing * lod_scale / sqrt(d_need);
-		fly = max(fly, smoothstep(0.0, 1.0, min(distance(p, from), distance(p, tp)) / max(mgap, 1e-6)));
+		// Where this atom hangs in the cloud: pushed out from the middle, then
+		// carried around by a slowly changing flow (streams plus eddies).
+		vec3 mid = bounds_min + bounds_size * 0.5;
+		float reach = length(bounds_size) * 0.3;
+		vec3 out_dir = normalize(from - mid + rand_dir(uid * 3u + 17u) * 0.6 + vec3(1e-5));
+		vec3 cloud = from + out_dir * reach * (0.35 + seed * 0.9);
+		cloud += (flow(cloud * 0.8 + grp * 3.0, cloud_time * 1.1 + grp * 6.0)
+				+ 0.45 * flow(cloud * 2.3 + seed, cloud_time * 1.9)) * (morph_swarm + morph_arc * 0.4);
+		p = mix(from, cloud, s1);
+		// Swarm in: curve towards the target along the flow, not straight.
+		vec3 sw = flow(tp * 0.9 + grp * 4.0, cloud_time * 1.5) * morph_swarm * 0.6 * sin(t * PI);
+		p = mix(p, tp, t) + sw;
+		fly = max(fly, shrink * (1.0 - grow));
 		c = mix(c, tcol, t);
 		n = normalize(mix(n, tn, t) + vec3(1e-6));
 		if (!beads) {
@@ -445,23 +460,25 @@ void vertex() {
 
 	// --- explode outward from a centre
 	if (explode != 0.0) {
+		// An atom first shrinks where it sits, then moves; coming back it lands
+		// first and grows after. Each has its own threshold, so the surface
+		// breaks up and closes grain by grain and nothing big is out of place.
+		float hold = 0.07 * (0.3 + 1.4 * hash01(uid * 19u + 2u));
+		float amount = max(abs(explode) - hold, 0.0);
 		vec3 d = normalize(p - explode_center + rand_dir(uid * 7u + 3u) * 0.35 + vec3(1e-5));
-		float moved = abs(explode) * (0.4 + seed * 1.2);
+		float moved = amount * (0.4 + seed * 1.2);
 		vec3 q = p + d * moved * sign(explode);
 		// Twist around the vertical axis, more the further out an atom is...
-		float ang = explode * explode_swirl * (0.5 + seed);
+		float ang = sign(explode) * amount * explode_swirl * (0.5 + seed);
 		vec3 r = q - explode_center;
 		q = explode_center + vec3(r.x * cos(ang) - r.z * sin(ang), r.y, r.x * sin(ang) + r.z * cos(ang));
 		// ...and get carried by turbulent streams that keep drifting.
 		float tb = explode_turbulence * min(moved, 1.5);
 		q += (flow(q * 1.3, cloud_time * 0.9) + 0.4 * flow(q * 3.4 + seed, cloud_time * 1.7)) * tb;
 		p = q;
-		// A bead keeps its small flying size until it's back within about one
-		// bead spacing of its place; only then does it grow to close the
-		// surface. (Growing earlier shows as big blobs while the cloud settles.)
-		float gap = point_spacing * lod_scale / sqrt(d_need);
-		fly = max(fly, smoothstep(0.0, 1.0, moved / max(gap, 1e-6)));
+		fly = max(fly, smoothstep(0.0, hold, abs(explode)));
 	}
+
 
 	// --- dissolve: points detach (randomly or as a sweeping front) and drift away
 	if (dissolve > 0.0) {
@@ -471,12 +488,13 @@ void vertex() {
 		float threshold = mix(seed, h01 * 0.85 + seed * 0.15, dissolve_directional);
 		float a = clamp((dissolve * (1.0 + dissolve_span) - threshold) / dissolve_span, 0.0, 1.0);
 		if (a > 0.0) {
-			vec3 dv = (rand_dir(uid * 11u + 5u) + dissolve_drift) * dissolve_spread * a * a;
-			p += dv + flow((p + dv) * 1.5, cloud_time * 0.8) * dissolve_spread * 0.35 * a * a;
+			// Shrinks in place first (a < 0.12), then drifts off.
+			float a2 = max(a - 0.12, 0.0) / 0.88;
+			vec3 dv = (rand_dir(uid * 11u + 5u) + dissolve_drift) * dissolve_spread * a2 * a2;
+			p += dv + flow((p + dv) * 1.5, cloud_time * 0.8) * dissolve_spread * 0.35 * a2 * a2;
 			size_scale *= 1.0 - smoothstep(0.55, 1.0, a);
 			glow += 1.0 - smoothstep(0.0, 0.35, a);
-			float dgap = point_spacing * lod_scale / sqrt(d_need);
-			fly = max(fly, smoothstep(0.0, 1.0, length(dv) / max(dgap, 1e-6)));
+			fly = max(fly, smoothstep(0.0, 0.12, a));
 		}
 	}
 
@@ -547,6 +565,11 @@ void vertex() {
 			vp = MODELVIEW_MATRIX * vec4(VERTEX, 1.0);
 		}
 	}
+	// Interior points only show as hole walls or as atoms in flight. Resting
+	// inside the model they'd poke through the surface as blobs.
+	if (!on_surface && st.x >= -1.0) {
+		size_scale *= smoothstep(0.0, 0.3, fly);
+	}
 	float obj_scale = length(MODELVIEW_MATRIX[0].xyz);
 	float ps = mix(point_size, target_point_size, morph_t);
 	// More beads per point = smaller beads (same coverage).
@@ -586,7 +609,11 @@ void vertex() {
 	v_center = vp.xyz;
 	v_vnormal = normalize(mat3(MODELVIEW_MATRIX) * n);
 	v_local = p;
-	v_flags = (ortho ? 1.0 : 0.0) + (clip_to_bounds && at_rest && fly == 0.0 ? 2.0 : 0.0);
+	// Trim at the bounding box while the bead sits untouched at its rest place
+	// (also while an effect is running but hasn't reached this bead yet).
+	bool in_place = fly == 0.0 && morph_t == 0.0 && !use_skin && vibrate_amplitude == 0.0
+			&& wobble_amplitude == 0.0 && st.x < 0.0;
+	v_flags = (ortho ? 1.0 : 0.0) + (clip_to_bounds && in_place ? 2.0 : 0.0);
 	v_bead = bead ? 1.0 : 0.0;
 	v_fly = fly;
 	v_shadow = shadow_pass ? 1.0 : 0.0;

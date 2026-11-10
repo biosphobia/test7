@@ -322,6 +322,8 @@ var _bind_bones := PackedInt32Array()
 var _bone_mats: Array[Transform3D] = []
 
 var _shadow_mat: ShaderMaterial
+var _finish_waiting := false   # morph done, waiting for the carve bake
+var _finish_wait := 0.0
 var _shadow_mm: MultiMesh
 var _shadow_inst := RID()
 ## Beads per stored point this frame (set by level of detail).
@@ -423,6 +425,10 @@ func _process(delta: float) -> void:
 	_poll_grid_task()
 	_poll_prep()
 	_poll_bake()
+	if _finish_waiting:
+		_finish_wait += delta
+		if (_carves.is_empty() and _bake_task < 0) or _finish_wait >= 1.0:
+			_finish_morph()
 	_sync_flat_proxy()
 	_update_lod()
 	_sync_shadow_proxy()
@@ -617,7 +623,7 @@ func _poll_bake() -> void:
 		_finish_bake()
 	if _carves.is_empty() or _grid == null:
 		return
-	if _carves.size() >= CARVE_BAKE_AT or now() - _last_carve_time > 0.75:
+	if _carves.size() >= CARVE_BAKE_AT or now() - _last_carve_time > 0.75 or _finish_waiting:
 		_start_bake()
 
 
@@ -865,7 +871,14 @@ func set_morph_target(t: PointCloudData) -> void:
 func _finish_morph() -> void:
 	if _tgt == null:
 		return
-	# Pending carves refer to the old point positions: fold them in first.
+	# Pending carves refer to the old point positions: fold them in first, on
+	# a worker thread. The morph stays at its last frame until that's done
+	# (it looks the same), so shooting during a morph never stalls a frame.
+	if not _carves.is_empty() and _finish_wait < 1.0:
+		_finish_waiting = true
+		return
+	_finish_waiting = false
+	_finish_wait = 0.0
 	_bake_now()
 	_cur = _tgt
 	_tgt = null

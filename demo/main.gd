@@ -373,16 +373,16 @@ func morph_target() -> void:
 		# Anything else morphs into a sphere and back to its own shape.
 		if not target.has_meta("home"):
 			target.set_meta("home", target.data)
-			target.morph_to(_sphere_target(target), 1.8)
+			target.morph_to(_sphere_target(target), 3.2)
 		else:
-			target.morph_to(target.get_meta("home"), 1.8)
+			target.morph_to(target.get_meta("home"), 3.2)
 			target.remove_meta("home")
 		return
 	var shapes: Array[PointCloudData] = body.get_meta("shapes")
 	var colliders: Array[Shape3D] = body.get_meta("colliders")
 	var i: int = (body.get_meta("shape_index") + 1) % shapes.size()
 	body.set_meta("shape_index", i)
-	target.morph_to(shapes[i], 2.2, false)
+	target.morph_to(shapes[i], 3.6, false)
 	(body.get_child(0) as CollisionShape3D).shape = colliders[i]
 
 

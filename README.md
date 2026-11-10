@@ -117,10 +117,13 @@ point_cloud.gdshader           draws up to `max_amplification` beads per point; 
   morphs, every point splits into four times as many atoms, each at most a
   few pixels wide and lit facing the viewer with part of its colour glowing,
   so the cloud reads as fine coloured dust. An atom only grows back to
-  surface size once it is within a bead spacing of its place.
+  surface size once it has landed: atoms shrink where they sit before they
+  move and grow only after arriving, so nothing big is ever out of place.
+  Interior points show only in flight or as hole walls.
 * **Swirls and swarms.** Atoms are carried by a smooth flow field, so
   neighbours move together: explosions twist and break into streams, and
-  morphs leave in clumps and swarm to the new shape (`morph_swarm`,
+  morphs first come apart into a drifting cloud, then swarm into the new
+  shape clump by clump (`morph_swarm`,
   `explode_swirl`, `explode_turbulence` shader parameters).
 * **Animation.** Skinned meshes keep their bone indices and weights per point,
   and the bone matrices are uploaded each frame from the `Skeleton3D`. So an
