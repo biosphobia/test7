@@ -106,6 +106,11 @@ func _add_cloud(parent: Node3D, fairy: PointCloudData, gun: PointCloudData) -> P
 	c.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	c.lod = false
 	c.morph_stagger = 0.3
+	# A tight, chunky burst: her atoms stay close and are big enough to see.
+	c.morph_swarm = 0.07
+	c.morph_arc = 0.05
+	c.atom_min_px = 5.0
+	c.atom_max_px = 6.0
 	parent.add_child(c)
 	_forms[c] = [fairy, gun]
 	# Warm both shapes so switching starts at once.
