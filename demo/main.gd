@@ -8,6 +8,7 @@ const GROUND_TILE := 5.0
 
 var player: PointPlayer
 var worm: PointWorm
+var quw: Quw   # the player's fairy assistant; she is also the shotgun
 var props: Array[StaticBody3D] = []
 var target: PointCloud          # cloud under the crosshair
 var target_body: CollisionObject3D
@@ -56,6 +57,9 @@ func _ready() -> void:
 	player.name = "Player"
 	player.position = Vector3(0, 0.1, 6.5)
 	add_child(player)
+	quw = Quw.new()
+	quw.name = "Quw"
+	player.camera.add_child(quw)
 
 	for c in get_tree().get_nodes_in_group(&"point_clouds"):
 		var cloud := c as PointCloud
@@ -162,7 +166,7 @@ func intro_bang() -> void:
 		var d := _intro_cam.global_position.distance_to(eye)
 		var there := smoothstep(1.3, 3.6, d)
 		for c in get_tree().get_nodes_in_group(&"point_clouds"):
-			if player.is_ancestor_of(c):
+			if (c as PointCloud).layers & PointPlayer.BODY_LAYER:  # the body, not Quw
 				(c as PointCloud).view_fade = there
 		_intro_cam.fov = lerpf(60.0, player.camera.fov, k), 0.0, 1.0, 1.9).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
 	tw.tween_callback(_end_intro)
@@ -510,8 +514,8 @@ func _process(delta: float) -> void:
 	_update_bullets(delta)
 	_fire_cd -= delta
 	if Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
-		if Input.is_action_pressed("shoot") and _fire_cd <= 0.0:
-			_fire_cd = 0.1
+		# Shots come from the shotgun: Quw has to be holding that form.
+		if Input.is_action_pressed("shoot") and quw.try_fire():
 			shoot()
 		if Input.is_action_pressed("paint") and target:
 			_paint_hue = fmod(_paint_hue + delta * 0.25, 1.0)
@@ -559,6 +563,11 @@ func _unhandled_input(event: InputEvent) -> void:
 		blend_post.visible = not blend_post.visible
 	elif event.is_action_pressed("switch_renderer") and not OS.has_feature("editor"):
 		preload("res://launcher/launcher.gd").toggle_renderer_and_restart(get_tree())
+	if event is InputEventMouseButton and event.pressed and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED \
+			and event.button_index in [MOUSE_BUTTON_WHEEL_UP, MOUSE_BUTTON_WHEEL_DOWN]:
+		quw.cycle_tool()  # ignored until she has fully formed
+	if event.is_action_pressed("reload"):
+		quw.reload()
 	if event.is_action_pressed("restore"):
 		for c in get_tree().get_nodes_in_group(&"point_clouds"):
 			(c as PointCloud).restore()
@@ -591,7 +600,7 @@ func shoot() -> void:
 	if target == null:
 		return
 	var cam := player.camera
-	var from := cam.global_position + cam.global_basis * Vector3(0.16, -0.12, -0.6)
+	var from := quw.muzzle() if quw.has_gun() else cam.global_position + cam.global_basis * Vector3(0.16, -0.12, -0.6)
 	var b := _free_bullet()
 	if b.is_empty():
 		_apply_hit(target, target_body, target_hit, (target_hit - from).normalized())
@@ -712,14 +721,14 @@ func _build_hud() -> void:
 	_info.add_theme_color_override("font_shadow_color", Color.BLACK)
 	_info.text = "\n".join([
 		"WASD move · Shift sprint · Space jump · mouse look (first person)",
-		"LMB shoot (chip points off) · RMB paint",
+		"Mouse wheel: Quw turns into the shotgun and back · LMB fire · R reload · RMB paint",
 		"Aim at something, then:",
 		"  E morph · Q dissolve / reassemble · F explode",
 		"  V vibrate · G wobble · H heal holes",
 		"[ / ] lower / raise resolution · - / = less / more detail",
 		"0 automatic detail on/off (off by default)",
 		"F9 smoothing filter on/off · F10 switch renderer (Compatibility is faster)",
-		"R restore everything · Esc free mouse",
+		"Backspace restore everything · Esc free mouse",
 	])
 	layer.add_child(_info)
 	_status = Label.new()
@@ -762,6 +771,7 @@ func _update_hud() -> void:
 			aimed += " (hp %d)" % worm.hp
 	if target:
 		aimed += "\n%s points · up to %d beads each" % [_group_digits(target.get_dot_count()), target.density]
+	aimed += "\n" + ("Quw" if quw.tool == Quw.Tool.NONE else "shotgun %d/%d%s" % [quw.shells, Quw.SHELLS, " reloading" if quw.reloading else ""])
 	var renderer := RenderingServer.get_current_rendering_method()
 	var hint := ""
 	if quality.is_maxed_out() and renderer != "gl_compatibility":
@@ -791,7 +801,7 @@ func _setup_input() -> void:
 	var keys := {
 		"move_forward": KEY_W, "move_back": KEY_S, "move_left": KEY_A, "move_right": KEY_D,
 		"jump": KEY_SPACE, "sprint": KEY_SHIFT, "morph": KEY_E, "dissolve": KEY_Q,
-		"explode": KEY_F, "vibrate": KEY_V, "wobble": KEY_G, "heal": KEY_H, "restore": KEY_R,
+		"explode": KEY_F, "vibrate": KEY_V, "wobble": KEY_G, "heal": KEY_H, "restore": KEY_BACKSPACE, "reload": KEY_R,
 		"detail_down": KEY_MINUS, "detail_up": KEY_EQUAL, "detail_auto": KEY_0,
 		"res_down": KEY_BRACKETLEFT, "res_up": KEY_BRACKETRIGHT,
 		"switch_renderer": KEY_F10, "toggle_blend": KEY_F9,

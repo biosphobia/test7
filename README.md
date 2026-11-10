@@ -53,7 +53,9 @@ is seen from straight behind the player's eyes.
 | Input | Action |
 |---|---|
 | WASD / Shift / Space / mouse | move, sprint, jump, look (first person) |
-| LMB (hold) | shoot bullets (little clouds of atoms) that knock atoms off whatever you aim at. The grey **stone block** is a different element: its chips fall, bounce and stay on the ground |
+| Mouse wheel | **Quw**, the fairy at the bottom right of the view, morphs into the shotgun and back (not while she is still forming) |
+| LMB (hold) | fire the shotgun (6 shells): bullets are little clouds of atoms that knock atoms off whatever you aim at. The grey **stone block** is a different element: its chips fall, bounce and stay on the ground |
+| R | reload |
 | RMB (hold) | paint points with a cycling colour |
 | E | morph (the shape-shifter cycles cube → sphere → torus → "POINTS"; anything else turns into a sphere and back) |
 | Q | dissolve / reassemble |
@@ -64,7 +66,7 @@ is seen from straight behind the player's eyes.
 | - / = | less / more detail (bigger / smaller atoms) |
 | 0 | automatic detail on / off (off by default: detail never changes by itself) |
 | F10 | switch renderer: Compatibility (default, fastest) ↔ Forward+ |
-| R | restore everything instantly |
+| Backspace | restore everything instantly |
 | F9 | smoothing filter on/off (edge-aware blend over the 3D view) |
 | Esc | free the mouse (click to recapture) |
 
