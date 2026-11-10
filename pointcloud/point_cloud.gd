@@ -226,9 +226,9 @@ static var _clock_frame := -1
 
 @export_group("Singularity")
 ## 1 = every atom is packed into a small swarming ball at gather_center.
-## Animate it to 0: the ball explodes (atoms are blown out in jets), then
-## the model is built: atoms travel to their places along the axes, snapped
-## to a grid like pixels, sweeping outwards from the ball and bottom-up.
+## Animate it to 0: the ball explodes (every atom is hurled far out), then
+## the model is built: atoms come back to their places along the axes,
+## snapped to a grid like pixels, and finally take on their colours.
 @export_range(0.0, 1.0) var gather := 0.0:
 	set(v):
 		var was := gather
@@ -264,11 +264,12 @@ static var _clock_frame := -1
 	set(v):
 		gather_eye = v
 		_sp(&"gather_eye", v)
-## 1 = this cloud is built last, whatever its position.
-@export_range(0.0, 1.0) var gather_last := 0.0:
+## This cloud's share of the build, as (start, end) fractions of it: e.g.
+## (0, 0.4) for a floor that is laid first, (0.9, 1) for something built last.
+@export var gather_window := Vector2(0, 1):
 	set(v):
-		gather_last = v
-		_sp(&"gather_last", v)
+		gather_window = v
+		_sp(&"gather_window", v)
 ## 0..1: how violently the ball shakes.
 @export var gather_agitate := 0.0:
 	set(v):
@@ -1337,7 +1338,7 @@ func _update_aabb() -> void:
 		if gather > 0.0 and is_inside_tree():
 			# Gathered atoms are far from the model: keep the cloud from being
 			# culled while they're out there.
-			var r := (gather_burst * 9.0 + gather_radius) / maxf(_avg_scale(), 1e-6)
+			var r := (gather_burst * 1.4 + gather_radius) / maxf(_avg_scale(), 1e-6)
 			box = box.merge(AABB(to_local(gather_center) - Vector3.ONE * r, Vector3.ONE * r * 2.0))
 		_set_custom_aabb(box)
 

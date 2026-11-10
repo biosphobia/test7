@@ -31,6 +31,7 @@ var _intro_prox := 0.0
 var _intro_crack := 0.0
 var _intro_jolt := 0.0
 var _intro_shake := 0.0
+var _intro_hush := 0.0
 var _intro_flash := 0.0
 var _intro_rays: ColorRect
 var _hud_layer: CanvasLayer
@@ -85,15 +86,24 @@ func start_intro() -> void:
 	_intro_cam.fov = 60.0
 	_intro_cam.far = 300.0
 	add_child(_intro_cam)
-	_intro_cam.global_position = player.global_position + Vector3(0, 2.8, 7.5)
-	_intro_cam.look_at(Vector3(0, 1.4, 0))
+	# A three-quarter view from behind the player's shoulder, low enough for
+	# the floor grid to run off into the distance.
+	_intro_cam.global_position = player.global_position + Vector3(6.5, 2.6, 8.0)
+	_intro_cam.look_at(Vector3(-1.0, 1.3, 0.0))
 	_intro_cam.current = true
 	_intro_centre = _intro_cam.global_position - _intro_cam.global_basis.z * 7.0
 	for c in get_tree().get_nodes_in_group(&"point_clouds"):
 		var cloud := c as PointCloud
 		cloud.gather_center = _intro_centre
-		cloud.gather_reach = 46.0
-		cloud.gather_burst = 6.0
+		cloud.gather_reach = 50.0
+		cloud.gather_burst = 70.0
+		# The floor is laid first, then everything on it, then the player.
+		if cloud in _ground_tiles:
+			cloud.gather_window = Vector2(0.0, 0.42)
+		elif player.is_ancestor_of(cloud):
+			cloud.gather_window = Vector2(0.88, 1.0)
+		else:
+			cloud.gather_window = Vector2(0.42, 0.88)
 		cloud.gather = 1.0
 	# Beams of light that break out of the ball when it's clicked.
 	var layer := CanvasLayer.new()
@@ -121,11 +131,16 @@ func intro_bang() -> void:
 		tw.tween_interval(gaps[i] + 0.001)
 		tw.tween_callback(_intro_crack_step.bind(i))
 	tw.tween_interval(0.5)
+	# A held breath: the beams go out and the ball pulls tight and still...
+	tw.tween_property(self, "_intro_crack", 0.0, 0.12)
+	tw.parallel().tween_property(self, "_intro_hush", 1.0, 0.12)
+	tw.tween_interval(0.75)
+	# ...then it goes off.
 	tw.tween_callback(_intro_release)
 	# The flash of the explosion; the beams die with it.
 	tw.tween_property(self, "_intro_flash", 0.0, 0.8).from(1.0).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
 	tw.parallel().tween_property(self, "_intro_crack", 0.0, 0.5)
-	tw.tween_interval(11.6)
+	tw.tween_interval(8.0)
 	tw.tween_callback(func(): intro = Intro.ENTER)
 	# Into the player's eyes.
 	tw.tween_method(func(k: float):
@@ -149,8 +164,7 @@ func _intro_crack_step(i: int) -> void:
 func _intro_release() -> void:
 	for c in get_tree().get_nodes_in_group(&"point_clouds"):
 		var cloud := c as PointCloud
-		cloud.gather_last = 1.0 if player.is_ancestor_of(cloud) else 0.0
-		cloud.create_tween().tween_property(cloud, "gather", 0.0, 12.0)
+		cloud.create_tween().tween_property(cloud, "gather", 0.0, 7.8)
 	# The blast shakes the camera hard and throws it back.
 	_intro_shake = 1.0
 	var back := _intro_cam.global_position + _intro_cam.global_basis.z * 6.0
@@ -188,9 +202,9 @@ func _update_intro(delta: float) -> void:
 	if _intro_cam:
 		_intro_cam.h_offset = randf_range(-1.0, 1.0) * _intro_shake * 0.35
 		_intro_cam.v_offset = randf_range(-1.0, 1.0) * _intro_shake * 0.35
-	var cracking := clampf(0.12 * _intro_crack + _intro_jolt, 0.0, 1.0)
+	var cracking := clampf(0.12 * _intro_crack + _intro_jolt, 0.0, 1.0) * (1.0 - _intro_hush)
 	var heat := 0.3 + 1.2 * _intro_prox + 0.5 * _intro_crack + 0.8 * _intro_jolt
-	var radius := 0.15 * (1.0 + 0.7 * _intro_prox)
+	var radius := 0.15 * (1.0 + 0.7 * _intro_prox) * (1.0 - 0.45 * _intro_hush)
 	for c in get_tree().get_nodes_in_group(&"point_clouds"):
 		var cloud := c as PointCloud
 		if cloud.gather <= 0.0:

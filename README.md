@@ -33,17 +33,16 @@ newer build, it downloads `game.pck` and restarts the exe on it with
 Open the folder in **Godot 4.4 or newer** and press Play (`demo/main.tscn`).
 
 The game opens on a singularity: every atom of the scene, the player
-included, swarms in a tiny ball in the middle of the screen. It loosens and
-glows as the mouse comes near. Click it and it cracks five times: with each
-crack two beams of light break out, the ball jolts and the camera lurches a
-quarter of the way closer. Then it explodes with a hard screen shake: every
-atom is blown outwards in jets that keep streaming past the camera. Out of
-that the world is built like a digital one, atoms travelling along the axes
-snapped to a pixel grid and slotting into place, starting at the far end of
-the world and coming towards the viewer, the player last. Every atom is white
-until it is in place, then takes on its own colour at its own pace; the
-blast empties its middle as it expands, clearing the view. The camera then drops into
-the player's head and hands over control.
+included, swarms in a tiny white ball in the middle of the screen. It loosens
+and glows as the mouse comes near. Click it and it cracks five times: with
+each crack two beams of light break out, the ball jolts and the camera
+lurches a quarter of the way closer. The beams go out, the ball holds still
+for a moment, and then it explodes with a hard screen shake: every atom is
+hurled far out in all directions. The world is then built like a digital
+one, atoms coming back along the axes snapped to a pixel grid: first the
+floor, from the far end towards the viewer, then everything on it, then the
+player. Only when it all stands do the atoms take on their colours. The
+camera then drops into the player's head and hands over control.
 
 | Input | Action |
 |---|---|
@@ -151,11 +150,12 @@ point_cloud.gdshader           draws up to `max_amplification` beads per point; 
   with each other or other objects. `carve(..., kick)` throws the chips in
   a direction, e.g. back along a bullet's path.
 * **Singularity.** `PointCloud.gather` (1 → 0) packs a cloud's atoms into a
-  small swarming ball at `gather_center`, then releases them in two acts:
-  an explosion that blows them out in jets (`gather_burst`), and a build in
-  which each atom travels to its place along the axes, snapped to a coarse
-  grid until it slots in. The build starts farthest from `gather_eye` and
-  comes towards it (`gather_reach`); `gather_last` makes a cloud go last.
+  small swarming ball at `gather_center`, then releases them in three acts:
+  an explosion that hurls every atom far out (`gather_burst`); a build in
+  which each atom comes back to its place along the axes, snapped to a
+  coarse grid until it slots in; and finally colour. `gather_window` gives
+  a cloud its share of the build (floor first, player last); within it the
+  build starts farthest from `gather_eye` (`gather_reach`).
   `gather_radius`, `gather_agitate` and `gather_heat` shape the ball. The
   demo intro drives it on every cloud at once.
 * **Swirls and swarms.** Atoms are carried by a smooth flow field, so
