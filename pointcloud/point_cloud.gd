@@ -224,6 +224,14 @@ static var _clock_frame := -1
 		wobble_speed = v
 		_sp(&"wobble_speed", v)
 
+## Below 1 the cloud thins out evenly, atom by atom, until at 0 nothing of it
+## is drawn in the view; its shadow stays. For letting a camera move into a
+## model (e.g. into a first-person body).
+@export_range(0.0, 1.0) var view_fade := 1.0:
+	set(v):
+		view_fade = v
+		_sp(&"view_fade", v)
+
 @export_group("Singularity")
 ## 1 = every atom is packed into a small swarming ball at gather_center.
 ## Animate it to 0: the ball explodes (every atom is hurled far out), then

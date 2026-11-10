@@ -125,6 +125,7 @@ uniform float gather_burst = 11.0;        // how far the explosion throws atoms
 uniform vec2 gather_window = vec2(0.0, 1.0); // this cloud's share of the build (start, end)
 uniform int gather_mode = 0;              // 0 rained in from above, 1 straight from the cloud, 2 grown from the ground
 uniform float gather_floor = 0.0;         // ground height, local space (mode 2)
+uniform float view_fade = 1.0;            // 1 = fully there, 0 = invisible in the view (shadow stays)
 uniform float gather_flat = 0.22;         // blast: 0 = a flat ring, 2 = roughly a sphere
 uniform vec3 gather_eye = vec3(0.0);      // world: the build starts farthest from here
 // Element behaviour of loose atoms (see PointElement).
@@ -640,7 +641,10 @@ void vertex() {
 				* (hash01(gk + 35u) < 0.5 ? -1.0 : 1.0);
 		vec3 dirv = normalize(vec3(cos(ring_a), lift, sin(ring_a)));
 		float speed = mix(0.6, 1.0, pow(hash01(gk + 13u), 0.4));
-		vec3 blown = dirv * gather_burst * speed * s1;
+		// Atoms thrown well above or below the ring don't go as far: they stay
+		// in sight as a sparse drift of specks until they are needed.
+		float near_sky = smoothstep(0.12, 0.45, abs(dirv.y));
+		vec3 blown = dirv * gather_burst * speed * s1 * mix(1.0, 0.16, near_sky);
 		// (still drifting slowly outwards while it waits)
 		blown *= 1.0 + 0.25 * x;
 		vec3 from = gather_center + mix(sing, blown, smoothstep(0.0, 0.02, x));
@@ -683,7 +687,8 @@ void vertex() {
 			float e = t * t * t * (t * (t * 6.0 - 15.0) + 10.0);
 			float skim = (0.15 + 0.9 * hash01(gk + 81u)) * (1.0 - smoothstep(0.55, 1.0, t));
 			vec3 low = vec3(from.x, gather_floor + 0.15 + 0.9 * hash01(gk + 81u), from.z);
-			p = mix(t > 0.0 ? low : from, place + vec3(0.0, skim, 0.0), e);
+			// (first coming down from wherever it was, in one unbroken path)
+			p = mix(mix(from, low, smoothstep(0.0, 0.3, t)), place + vec3(0.0, skim, 0.0), e);
 			gather_cap = mix(speck, 4096.0, smoothstep(0.9, 1.0, t));
 		} else if (gather_mode == 2) {
 			// Raised out of the ground: the whole model comes up through the
@@ -698,7 +703,12 @@ void vertex() {
 				gather_cap = 4096.0;
 				t = g;
 			} else {
-				p = from;
+				// Just before the model surfaces, its atoms stream down out of
+				// the sky and sink into the floor where it will rise.
+				float dive = smoothstep(cloud_start - 0.09, cloud_start, x);
+				vec3 root = vec3(place.x, gather_floor - point_spacing * 4.0, place.z);
+				p = mix(from, root, dive * dive);
+				size_scale *= 1.0 - smoothstep(0.97, 1.0, dive);
 				gather_cap = speck;
 			}
 		} else {
@@ -712,7 +722,10 @@ void vertex() {
 				size_scale *= smoothstep(0.0, 0.12, t);
 				gather_cap = mix(1.4, 4096.0, smoothstep(0.82, 1.0, t));
 			} else {
-				p = from;
+				// Before its turn the atom climbs from wherever the blast left
+				// it to its drop point.
+				float rise = smoothstep(start - 0.08, start, x);
+				p = mix(from, place + vec3(0.0, high, 0.0), rise * rise);
 				gather_cap = speck;
 			}
 		}
@@ -776,6 +789,12 @@ void vertex() {
 			* (on_surface ? 1.0 : mix(interior_scale, target_interior_scale, morph_t));
 	float world_size = disc_size * obj_scale * size_scale;
 	bool shadow_pass = PROJECTION_MATRIX[3][3] > 0.5; // orthographic = directional shadow map
+	// view_fade thins the cloud out evenly, atom by atom, in the view only: the
+	// model turns to nothing while its shadow stays.
+	if (!shadow_pass && view_fade < 1.0 && hash01(uid * 97u + 3u) >= view_fade) {
+		size_scale = 0.0;
+		world_size = 0.0;
+	}
 	if (shadow_pass) {
 		// Loose atoms are specks: they cast no shadow (enlarged shadow dots
 		// would turn a cloud of them into dark blotches on the ground).

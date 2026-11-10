@@ -155,11 +155,14 @@ func intro_bang() -> void:
 	tw.tween_method(func(k: float):
 		var eye := player.camera.global_position
 		_intro_cam.global_position = _intro_enter_from.lerp(eye, k)
-		# Coming up behind the player, the near plane moves ahead of the
-		# camera and through the body, so by the time the camera is at the
+		# Coming up behind the player, the body thins away to nothing, atom
+		# by atom (its shadow stays), so by the time the camera is at the
 		# eyes it sees exactly what the player's own camera sees: no jump.
 		var d := _intro_cam.global_position.distance_to(eye)
-		_intro_cam.near = lerpf(0.05, d + 0.45, smoothstep(2.6, 1.2, d))
+		var there := smoothstep(1.3, 3.6, d)
+		for c in get_tree().get_nodes_in_group(&"point_clouds"):
+			if player.is_ancestor_of(c):
+				(c as PointCloud).view_fade = there
 		_intro_cam.fov = lerpf(60.0, player.camera.fov, k), 0.0, 1.0, 1.9).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
 	tw.tween_callback(_end_intro)
 
@@ -191,6 +194,8 @@ func _end_intro() -> void:
 	intro = Intro.NONE
 	player.camera.current = true
 	_env.fog_density = 1.0
+	for c in get_tree().get_nodes_in_group(&"point_clouds"):
+		(c as PointCloud).view_fade = 1.0  # (the player's own camera never draws the body)
 	_intro_cam.queue_free()
 	_intro_cam = null
 	_intro_rays.get_parent().queue_free()
