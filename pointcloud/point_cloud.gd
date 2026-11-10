@@ -30,8 +30,6 @@ const LOD_MIN_POINTS := 1500
 ## Shadows are cast by a hidden low-detail copy using this fraction of the
 ## points drawn on screen (shadow maps are blurry anyway, and every shadow
 ## cascade redraws all casters).
-## Extra atoms per point while an effect has points in flight.
-const ATOM_BOOST := 4.0
 const SHADOW_DETAIL := 0.25
 ## Carves applied on the GPU before being folded into the debris texture.
 const MAX_CARVES := 48
@@ -49,9 +47,9 @@ const PROXY_RES := 128
 ## point spawns extra beads (see max_amplification), so beads stay this far
 ## apart at any distance. Raise it for speed (PointCloudQuality does this
 ## automatically), lower it for finer beads.
-static var lod_spacing_px := 2.0
+static var lod_spacing_px := 1.25
 ## Most beads one cloud may process per frame (caps amplification up close).
-const MAX_DOTS_PER_CLOUD := 2000000
+const MAX_DOTS_PER_CLOUD := 3000000
 ## Turns level of detail off everywhere (always draw every point).
 static var lod_enabled := true
 
@@ -1080,12 +1078,6 @@ func _update_lod() -> void:
 				# Quantise to steps of 1/sqrt(2) so counts don't change every frame.
 				f = pow(2.0, floorf(log(maxf(f, 1e-9)) / log(2.0) * 2.0) / 2.0)
 	var target := lod_spacing_px * lod_spacing_scale
-	# While points fly (explode, dissolve, morph) every point splits into more,
-	# smaller atoms, so the cloud reads as fine dust instead of a few blobs.
-	# At rest this changes nothing visible: more, smaller beads cover the same.
-	if dissolve > 0.0 or explode != 0.0 or morph > 0.0:
-		f *= ATOM_BOOST
-		target /= sqrt(ATOM_BOOST)
 	if target != _target_px:
 		_target_px = target
 		_sp(&"target_px", target)

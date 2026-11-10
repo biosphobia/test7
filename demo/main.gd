@@ -143,7 +143,7 @@ func _build_ground() -> void:
 			# Flat and textured: resting floor beads are invisible either way,
 			# so a few extra beads up close are plenty.
 			cloud.max_amplification = 1
-			cloud.lod_spacing_scale = 2.5
+			cloud.lod_spacing_scale = 4.0
 			cloud.bead_overlap = 0.8  # evenly spread flat tiles: less overlap is enough
 			body.add_child(cloud)
 			_ground_tiles.append(cloud)

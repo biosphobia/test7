@@ -23,6 +23,10 @@ func _ready() -> void:
 	main = MAIN.instantiate()
 	add_child(main)
 	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+	# Movie Maker runs at a fixed frame rate, which auto quality would read as
+	# a slow machine and answer by lowering detail. Record at full detail.
+	main.quality.enabled = false
+	PointCloud.lod_spacing_px = 1.25
 	for c in main.get_children():
 		if c is CanvasLayer:
 			c.visible = false

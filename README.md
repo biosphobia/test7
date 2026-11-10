@@ -113,13 +113,13 @@ point_cloud.gdshader           draws up to `max_amplification` beads per point; 
   few frames and then starts. Targets stay cached on the GPU, and finishing a
   morph swaps textures instead of re-uploading. `prepare_morph_target()`
   warms the cache ahead of time.
-* **In flight, points are atoms.** While a cloud explodes, dissolves or
-  morphs, every point splits into four times as many atoms, each at most a
-  few pixels wide and lit facing the viewer with part of its colour glowing,
-  so the cloud reads as fine coloured dust. An atom only grows back to
-  surface size once it has landed: atoms shrink where they sit before they
-  move and grow only after arriving, so nothing big is ever out of place.
-  Interior points show only in flight or as hole walls.
+* **The same atoms, all the time.** A resting object and an exploding one
+  are drawn from the very same atoms at the same on-screen size (about 2.6 px
+  at the default `lod_spacing_px` of 1.25). Effects only move them: nothing
+  is spawned, resized or swapped when an effect starts or ends, so there is
+  no visible transition. Lighting shifts gradually with distance from an
+  atom's place, from surface-lit to a free, partly glowing speck. Interior
+  points show only once they've moved or as hole walls.
 * **Swirls and swarms.** Atoms are carried by a smooth flow field, so
   neighbours move together: explosions twist and break into streams, and
   morphs first come apart into a drifting cloud, then swarm into the new

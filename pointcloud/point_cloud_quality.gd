@@ -11,9 +11,9 @@ extends Node
 @export var target_fps := 60.0
 ## Fraction of the frame budget to aim for, leaving headroom for spikes.
 @export_range(0.5, 1.0) var budget_fraction := 0.85
-@export var min_spacing_px := 1.6
+@export var min_spacing_px := 1.25
 ## Point spacing reached before resolution is lowered.
-@export var soft_spacing_px := 3.0
+@export var soft_spacing_px := 2.5
 @export var max_spacing_px := 6.0
 @export var min_render_scale := 0.6
 @export var enabled := true

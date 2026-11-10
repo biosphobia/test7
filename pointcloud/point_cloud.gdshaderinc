@@ -84,8 +84,8 @@ uniform float morph_swarm = 0.7;
 // Explosions: twist around the vertical axis and turbulent streams.
 uniform float explode_swirl = 0.9;
 uniform float explode_turbulence = 0.55;
-// Atoms in flight are never drawn bigger than this many pixels.
-uniform float atom_max_px = 2.6;
+// Loose atoms never draw wider than this, even when quality is turned down.
+uniform float atom_max_px = 3.2;
 // Share of an atom's colour that glows by itself in flight, so a cloud of
 // atoms keeps its colour instead of flickering light and dark.
 uniform float atom_glow = 0.55;
@@ -340,6 +340,7 @@ void vertex() {
 	float size_scale = 1.0;
 	float glow = 0.0;
 	float fly = 0.0; // how much this dot is "in flight" (0 = on the surface)
+	float disp = 0.0; // how far effects have carried it from its place
 	bool at_rest = still && !use_skin;
 	vec4 st = vec4(-1.0);
 	float morph_t = 0.0; // this dot's progress towards the morph target
@@ -410,9 +411,7 @@ void vertex() {
 		float t_land = t_gather + 0.2;                          // at its new place
 		// An atom shrinks where it sits before it moves, and grows only once it
 		// has landed: nothing big is ever out of place.
-		float shrink = smoothstep(t_leave, t_leave + 0.035, morph);
-		float grow = smoothstep(t_land, t_land + 0.04, morph);
-		float s1 = clamp((morph - t_leave - 0.035) / 0.3, 0.0, 1.0);
+		float s1 = clamp((morph - t_leave) / 0.33, 0.0, 1.0);
 		s1 = 1.0 - (1.0 - s1) * (1.0 - s1) * (1.0 - s1);       // bursts out, then slows
 		float t = clamp((morph - t_gather) / 0.2, 0.0, 1.0);
 		t = t * t * (3.0 - 2.0 * t);
@@ -436,7 +435,7 @@ void vertex() {
 		// Swarm in: curve towards the target along the flow, not straight.
 		vec3 sw = flow(tp * 0.9 + grp * 4.0, cloud_time * 1.5) * morph_swarm * 0.6 * sin(t * PI);
 		p = mix(p, tp, t) + sw;
-		fly = max(fly, shrink * (1.0 - grow));
+		disp = max(disp, min(distance(p, from), distance(p, tp)));
 		c = mix(c, tcol, t);
 		n = normalize(mix(n, tn, t) + vec3(1e-6));
 		if (!beads) {
@@ -463,8 +462,7 @@ void vertex() {
 		// An atom first shrinks where it sits, then moves; coming back it lands
 		// first and grows after. Each has its own threshold, so the surface
 		// breaks up and closes grain by grain and nothing big is out of place.
-		float hold = 0.07 * (0.3 + 1.4 * hash01(uid * 19u + 2u));
-		float amount = max(abs(explode) - hold, 0.0);
+		float amount = abs(explode);
 		vec3 d = normalize(p - explode_center + rand_dir(uid * 7u + 3u) * 0.35 + vec3(1e-5));
 		float moved = amount * (0.4 + seed * 1.2);
 		vec3 q = p + d * moved * sign(explode);
@@ -476,7 +474,7 @@ void vertex() {
 		float tb = explode_turbulence * min(moved, 1.5);
 		q += (flow(q * 1.3, cloud_time * 0.9) + 0.4 * flow(q * 3.4 + seed, cloud_time * 1.7)) * tb;
 		p = q;
-		fly = max(fly, smoothstep(0.0, hold, abs(explode)));
+		disp = max(disp, moved);
 	}
 
 
@@ -489,12 +487,12 @@ void vertex() {
 		float a = clamp((dissolve * (1.0 + dissolve_span) - threshold) / dissolve_span, 0.0, 1.0);
 		if (a > 0.0) {
 			// Shrinks in place first (a < 0.12), then drifts off.
-			float a2 = max(a - 0.12, 0.0) / 0.88;
+			float a2 = a;
 			vec3 dv = (rand_dir(uid * 11u + 5u) + dissolve_drift) * dissolve_spread * a2 * a2;
 			p += dv + flow((p + dv) * 1.5, cloud_time * 0.8) * dissolve_spread * 0.35 * a2 * a2;
 			size_scale *= 1.0 - smoothstep(0.55, 1.0, a);
 			glow += 1.0 - smoothstep(0.0, 0.35, a);
-			fly = max(fly, smoothstep(0.0, 0.12, a));
+			disp = max(disp, length(dv));
 		}
 	}
 
@@ -567,8 +565,13 @@ void vertex() {
 	}
 	// Interior points only show as hole walls or as atoms in flight. Resting
 	// inside the model they'd poke through the surface as blobs.
+	// An atom is the same size wherever it is. Only its lighting changes, and
+	// gradually with distance from its place: on the surface it is lit by the
+	// surface's normal, far away as a free speck.
+	float agap = point_spacing * lod_scale / sqrt(d_need);
+	fly = max(fly, smoothstep(0.0, max(length(bounds_size) * 0.2, agap * 4.0), disp));
 	if (!on_surface && st.x >= -1.0) {
-		size_scale *= smoothstep(0.0, 0.3, fly);
+		size_scale *= max(smoothstep(0.0, agap * 3.0, disp), st.x >= 0.0 ? 1.0 : 0.0);
 	}
 	float obj_scale = length(MODELVIEW_MATRIX[0].xyz);
 	float ps = mix(point_size, target_point_size, morph_t);
@@ -577,9 +580,7 @@ void vertex() {
 	float cover = mix(bead_cover_single, bead_cover, clamp(d_need - 1.0, 0.0, 1.0)) * bead_overlap;
 	float disc_size = ps * lod_scale * amp_scale * (beads ? cover : (splats ? splat_scale : 1.0))
 			* (on_surface ? 1.0 : mix(interior_scale, target_interior_scale, morph_t));
-	// Beads in flight are smaller and don't grow much with level of detail.
-	float bead_world = ps * min(lod_scale, 1.6) * bead_size * amp_scale;
-	float world_size = mix(disc_size, bead_world, fly) * obj_scale * size_scale;
+	float world_size = disc_size * obj_scale * size_scale;
 	bool shadow_pass = PROJECTION_MATRIX[3][3] > 0.5; // orthographic = directional shadow map
 	if (shadow_pass) {
 		world_size *= shadow_disc_scale;
@@ -600,7 +601,13 @@ void vertex() {
 		px /= max(-vp.z, 1e-3); // perspective
 	}
 	v_alive = size_scale > 0.02 ? 1.0 : 0.0;
-	POINT_SIZE = v_alive > 0.5 ? clamp(px, min_pixel_size, mix(max_pixel_size, atom_max_px, fly)) : 1.0;
+	// On screen a resting atom is target_px * cover wide (that's what level of
+	// detail aims for). Once loose it never draws bigger than that, however
+	// close it flies to the camera or however sparse its part of the model.
+	// (Interior points are always held to it: they never have to close a surface.)
+	float loose = on_surface ? max(smoothstep(0.0, agap * 2.0, disp), fly) : 1.0;
+	float px_cap = mix(max_pixel_size, clamp(target_px * cover, 1.5, atom_max_px), shadow_pass ? 0.0 : loose);
+	POINT_SIZE = v_alive > 0.5 ? clamp(px, min_pixel_size, px_cap) : 1.0;
 	v_px = POINT_SIZE;
 	// Sizes in view space, corrected for the pixel clamp.
 	float clamp_ratio = POINT_SIZE / max(px, 1e-4);
@@ -611,7 +618,7 @@ void vertex() {
 	v_local = p;
 	// Trim at the bounding box while the bead sits untouched at its rest place
 	// (also while an effect is running but hasn't reached this bead yet).
-	bool in_place = fly == 0.0 && morph_t == 0.0 && !use_skin && vibrate_amplitude == 0.0
+	bool in_place = disp == 0.0 && fly == 0.0 && morph_t == 0.0 && !use_skin && vibrate_amplitude == 0.0
 			&& wobble_amplitude == 0.0 && st.x < 0.0;
 	v_flags = (ortho ? 1.0 : 0.0) + (clip_to_bounds && in_place ? 2.0 : 0.0);
 	v_bead = bead ? 1.0 : 0.0;
