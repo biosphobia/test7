@@ -415,8 +415,13 @@ void vertex() {
 	// --- explode outward from a centre
 	if (explode != 0.0) {
 		vec3 d = normalize(p - explode_center + rand_dir(uid * 7u + 3u) * 0.35 + vec3(1e-5));
-		p += d * explode * (0.4 + seed * 1.2);
-		fly = max(fly, clamp(abs(explode) * 3.0, 0.0, 1.0));
+		float moved = abs(explode) * (0.4 + seed * 1.2);
+		p += d * moved * sign(explode);
+		// A bead keeps its small flying size until it's back within about one
+		// bead spacing of its place; only then does it grow to close the
+		// surface. (Growing earlier shows as big blobs while the cloud settles.)
+		float gap = point_spacing * lod_scale / sqrt(d_need);
+		fly = max(fly, smoothstep(0.0, 1.0, moved / max(gap, 1e-6)));
 	}
 
 	// --- dissolve: points detach (randomly or as a sweeping front) and drift away

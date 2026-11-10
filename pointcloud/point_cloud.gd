@@ -740,7 +740,8 @@ func explode_pulse(strength := 1.5, duration := 1.2) -> Tween:
 	explode_center = data.aabb.get_center() if data else Vector3.ZERO
 	var tw := create_tween()
 	tw.tween_property(self, "explode", strength, duration * 0.3).set_trans(Tween.TRANS_EXPO).set_ease(Tween.EASE_OUT)
-	tw.tween_property(self, "explode", 0.0, duration * 0.7).set_trans(Tween.TRANS_ELASTIC).set_ease(Tween.EASE_OUT)
+	# Settles without springing back and forth, so beads land once.
+	tw.tween_property(self, "explode", 0.0, duration * 0.7).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN_OUT)
 	return tw
 
 
