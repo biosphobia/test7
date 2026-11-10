@@ -118,9 +118,11 @@ uniform vec3 debris_gravity = vec3(0.0, -3.0, 0.0);
 uniform float gather = 0.0;
 uniform vec3 gather_center = vec3(0.0);   // local space
 uniform float gather_radius = 0.4;
-uniform float gather_reach = 30.0;        // distance at which the last atoms leave
+uniform float gather_reach = 30.0;        // distance at which the build finishes
 uniform float gather_heat = 0.0;          // white-hot glow of gathered atoms
 uniform float gather_agitate = 0.0;       // 0..1: the ball shakes
+uniform float gather_burst = 11.0;        // how far the explosion throws atoms
+uniform float gather_last = 0.0;          // 1 = this cloud is built last
 // Element behaviour of loose atoms (see PointElement).
 uniform bool debris_lands = false;     // collide with the ground plane
 uniform float debris_floor_y = 0.0;    // ground height, local space
@@ -617,30 +619,53 @@ void vertex() {
 		vec3 sing = orb * gather_radius * pow(hash01(gk + 3u), 0.6)
 				+ flow(orb * 3.0 + seed, cloud_time * 2.0) * gather_radius * 0.2
 				+ rand_dir(gk + uint(cloud_time * 24.0) * 7919u) * gather_radius * 0.7 * gather_agitate;
-		// The world unfolds out of the ball: every atom leaves along a spiral
-		// that is its own place shrunk and twisted about the vertical axis, so
-		// what streams out is the scene itself, in miniature, unwinding like
-		// the arms of a galaxy. Near things leave first; the ball drains.
-		vec3 v = place - gather_center;
-		float d = length(v);
 		float x = 1.0 - gather;
-		float grp = 0.5 + 0.5 * flow(rest * 0.5, 0.0).x;
-		float start = 0.62 * mix(clamp(d / gather_reach, 0.0, 1.0), grp, 0.25) + 0.03 * seed;
-		float t = clamp((x - start) / 0.35, 0.0, 1.0);
-		float e = t * t * (3.0 - 2.0 * t);
-		float twist = (1.0 - e) * (1.0 - e) * (2.6 + d * 0.12);
-		float ca = cos(twist);
-		float sa = sin(twist);
-		vec3 sp = vec3(v.x * ca - v.z * sa, v.y, v.x * sa + v.z * ca) * e;
-		float arc = sin(e * PI);
-		sp.y += arc * d * 0.22;                       // streams arch up and over
-		sp += flow(place * 0.5 + grp * 4.0, cloud_time * 0.9) * arc * (0.25 + d * 0.03); // ribbons
-		p = gather_center + sp + sing * (1.0 - e);
+
+		// Act 1, the explosion: everything is blown out of the ball at once.
+		// Most atoms fly in a few dozen jets (dense streaks, each its own
+		// length, curling as they slow), the rest as a fast loose spray.
+		float s1 = clamp(x / 0.1, 0.0, 1.0);
+		s1 = 1.0 - pow(1.0 - s1, 3.0);
+		uint jet = pcg_hash(gk + 77u) % 44u;
+		bool spray = hash01(gk + 21u) < 0.22;
+		vec3 dirv = spray ? rand_dir(gk + 31u) : rand_dir(jet * 9781u + 5u);
+		float len = spray ? 0.25 + 0.75 * hash01(gk + 13u)
+				: (0.12 + 0.88 * pow(hash01(gk + 13u), 0.7)) * (0.55 + 0.45 * hash01(jet * 13u + 1u));
+		len *= gather_burst;
+		vec3 blown = dirv * len;
+		blown += rand_dir(gk + 41u) * len * (spray ? 0.0 : 0.04);
+		blown += flow(blown * 0.22 + float(jet), cloud_time * 0.5) * len * 0.14 * s1;
+		vec3 from = gather_center + mix(sing, blown, s1);
+
+		// Act 2, the world is built: atoms travel to their places the way a
+		// digital world assembles: along the axes (x, then z, then y), snapped
+		// to a coarse grid of "pixels" until they slot in. The build sweeps
+		// outwards over the ground and climbs each object from the bottom.
+		vec3 wplace = (MODEL_MATRIX * vec4(place, 1.0)).xyz;
+		vec3 wcentre = (MODEL_MATRIX * vec4(gather_center, 1.0)).xyz;
+		float order = 0.7 * clamp(length(wplace.xz - wcentre.xz) / gather_reach, 0.0, 1.0)
+				+ 0.3 * clamp(wplace.y / 5.0, 0.0, 1.0);
+		order = mix(order, 1.0, gather_last);
+		// Each atom's trip is short, so at any moment most atoms are either
+		// still in the blast's jets or already in place, not in between.
+		float start = 0.2 + 0.68 * order + 0.02 * seed;
+		float t = clamp((x - start) / 0.1, 0.0, 1.0);
+		float tx = smoothstep(0.0, 1.0, clamp(t * 3.0, 0.0, 1.0));
+		float tz = smoothstep(0.0, 1.0, clamp(t * 3.0 - 1.0, 0.0, 1.0));
+		float ty = smoothstep(0.0, 1.0, clamp(t * 3.0 - 2.0, 0.0, 1.0));
+		vec3 q = vec3(mix(from.x, place.x, tx), mix(from.y, place.y, ty), mix(from.z, place.z, tz));
+		float cell = 0.22;
+		float snap = smoothstep(0.0, 0.08, t) * (1.0 - smoothstep(0.75, 1.0, t));
+		q = mix(q, (floor(q / cell) + 0.5) * cell, snap);
+		p = q;
 		disp = max(disp, distance(p, place));
-		// White-hot in the ball, cooling to its own colour as it travels.
-		float heat = gather_heat * (1.0 - e) * (1.0 - e);
+		// Hot in the ball and the first instant of the blast, then its own
+		// colour; a cool flash as it slots into place.
+		float heat = gather_heat * (1.0 - smoothstep(0.03, 0.22, x));
 		c.rgb = mix(c.rgb, vec3(1.0, 0.9, 0.7), clamp(heat * 0.5, 0.0, 0.9));
-		glow += heat * 0.5;
+		float slot = sin(clamp((t - 0.7) / 0.3, 0.0, 1.0) * PI);
+		c.rgb = mix(c.rgb, vec3(0.55, 0.95, 1.0), slot * 0.7);
+		glow += heat * 0.4;
 	}
 
 	if (cull) {
