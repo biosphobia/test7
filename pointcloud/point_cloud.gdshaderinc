@@ -112,6 +112,14 @@ uniform float glow_strength = 4.0;
 
 uniform float debris_lifetime = 2.0;
 uniform vec3 debris_gravity = vec3(0.0, -3.0, 0.0);
+// Singularity: gather = 1 packs every atom into a small swarming ball at
+// gather_center; animating it to 0 is the big bang: the ball bursts, then
+// the atoms swarm to their places.
+uniform float gather = 0.0;
+uniform vec3 gather_center = vec3(0.0);   // local space
+uniform float gather_radius = 0.4;
+uniform float gather_reach = 9.0;         // how far the burst throws atoms
+uniform float gather_heat = 0.0;          // white-hot glow of gathered atoms
 // Element behaviour of loose atoms (see PointElement).
 uniform bool debris_lands = false;     // collide with the ground plane
 uniform float debris_floor_y = 0.0;    // ground height, local space
@@ -362,7 +370,7 @@ void vertex() {
 	}
 	vec3 base = texelFetch(pos_tex, tc, 0).xyz;
 	bool still = morph == 0.0 && vibrate_amplitude == 0.0 && wobble_amplitude == 0.0
-			&& explode == 0.0 && dissolve == 0.0;
+			&& explode == 0.0 && dissolve == 0.0 && gather == 0.0;
 
 	// --- early out: how many beads does this point need here?
 	vec4 vp0 = MODELVIEW_MATRIX * vec4(base, 1.0);
@@ -595,6 +603,37 @@ void vertex() {
 
 	custom_effect(p, n, c, size_scale, rest, seed, id, sub, cloud_time);
 	} // ======== end of drawn-bead work
+	// --- singularity / big bang (overrides where everything above put the atom)
+	if (gather > 0.0 && !cull) {
+		vec3 place = p;
+		uint gk = uid * 41u + 11u;
+		// In the ball every atom circles the centre on its own tilted orbit.
+		vec3 ax = rand_dir(gk);
+		vec3 perp = normalize(cross(ax, rand_dir(gk + 5u)) + vec3(1e-5));
+		float ang = cloud_time * (1.2 + 3.5 * hash01(gk + 9u)) + seed * TAU;
+		vec3 orb = perp * cos(ang) + cross(ax, perp) * sin(ang);
+		vec3 sing = gather_center + orb * gather_radius * pow(hash01(gk + 3u), 0.6)
+				+ flow(orb * 3.0 + seed, cloud_time * 2.0) * gather_radius * 0.2;
+		float x = 1.0 - gather;
+		float grp = 0.5 + 0.5 * flow(rest * 0.6, 0.0).x;
+		float sched = mix(seed, grp, 0.7);
+		// The bang: thrown outwards very fast, slowing into a wide drifting cloud.
+		float s1 = clamp(x / 0.2, 0.0, 1.0);
+		s1 = 1.0 - pow(1.0 - s1, 4.0);
+		vec3 far = gather_center + orb * gather_reach * (0.2 + 0.8 * hash01(gk + 13u));
+		far += flow(far * 0.3 + grp * 3.0, cloud_time * 0.8) * gather_reach * 0.18;
+		vec3 q = mix(sing, far, s1);
+		// Then each clump of atoms swarms to its place.
+		float t = clamp((x - 0.28 - sched * 0.46) / 0.26, 0.0, 1.0);
+		t = t * t * (3.0 - 2.0 * t);
+		q = mix(q, place, t) + flow(place * 0.7 + grp * 4.0, cloud_time * 1.4) * sin(t * PI) * 0.8;
+		p = q;
+		disp = max(disp, distance(p, place));
+		float heat = gather_heat * (1.0 - t);
+		c.rgb = mix(c.rgb, vec3(1.0, 0.92, 0.75), clamp(heat * 0.45, 0.0, 0.85));
+		glow += heat * 0.5;
+	}
+
 	if (cull) {
 		p = vec3(1e9); // far outside every frustum: nothing is rasterised
 		size_scale = 0.0;

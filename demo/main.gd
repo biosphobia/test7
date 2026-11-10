@@ -20,6 +20,16 @@ var _info: Label
 var _status: Label
 var _fire_cd := 0.0
 var _paint_hue := 0.0
+# Intro: everything starts packed into a singularity in the middle of the screen.
+enum Intro { NONE, WAIT, BANG, ENTER }
+var intro := Intro.NONE
+## Set to 0..1 to drive the hover from code (tests); -1 = follow the mouse.
+var intro_hover_override := -1.0
+var _intro_cam: Camera3D
+var _intro_centre := Vector3.ZERO
+var _intro_prox := 0.0
+var _intro_heat := 0.0
+var _hud_layer: CanvasLayer
 const BULLET_SPEED := 90.0
 const BULLET_POOL := 8
 var _bullets: Array[Dictionary] = []   # pooled bullets, each a small cloud of atoms
@@ -53,6 +63,95 @@ func _ready() -> void:
 	add_child(quality)
 	_build_hud()
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+	# Played when the demo is the game itself, not when a test embeds it.
+	if get_parent() == get_tree().root:
+		start_intro()
+
+
+# ================================================================ intro
+
+## Packs every atom in the scene (ground, props, worm, player) into a small
+## swarming ball in the middle of the screen and waits for a click on it.
+func start_intro() -> void:
+	intro = Intro.WAIT
+	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+	player.set_physics_process(false)
+	_hud_layer.visible = false
+	_intro_cam = Camera3D.new()
+	_intro_cam.fov = 60.0
+	_intro_cam.far = 300.0
+	add_child(_intro_cam)
+	_intro_cam.global_position = player.global_position + Vector3(0, 2.8, 7.5)
+	_intro_cam.look_at(Vector3(0, 1.4, 0))
+	_intro_cam.current = true
+	_intro_centre = _intro_cam.global_position - _intro_cam.global_basis.z * 7.0
+	for c in get_tree().get_nodes_in_group(&"point_clouds"):
+		var cloud := c as PointCloud
+		cloud.gather_center = _intro_centre
+		cloud.gather_reach = 9.0
+		cloud.gather = 1.0
+
+
+## The big bang: the ball bursts and everything swarms into place; the player
+## last. Then the camera drops into the player's head and control begins.
+func intro_bang() -> void:
+	if intro != Intro.WAIT:
+		return
+	intro = Intro.BANG
+	_intro_heat = 3.0
+	for c in get_tree().get_nodes_in_group(&"point_clouds"):
+		var cloud := c as PointCloud
+		var tw := cloud.create_tween()
+		if player.is_ancestor_of(cloud):
+			tw.tween_interval(1.4)  # the player assembles last
+		tw.tween_property(cloud, "gather", 0.0, 5.2)
+	var tw := create_tween()
+	tw.tween_property(self, "_intro_heat", 0.12, 1.6).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+	tw.tween_interval(5.1)
+	tw.tween_callback(func(): intro = Intro.ENTER)
+	# Into the player's eyes.
+	tw.tween_method(func(k: float):
+		var a := _intro_cam.global_transform
+		var b := player.camera.global_transform
+		_intro_cam.global_transform = a.interpolate_with(b, k)
+		_intro_cam.fov = lerpf(_intro_cam.fov, player.camera.fov, k), 0.0, 1.0, 1.3).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN)
+	tw.tween_callback(_end_intro)
+
+
+func _end_intro() -> void:
+	intro = Intro.NONE
+	player.camera.current = true
+	_intro_cam.queue_free()
+	_intro_cam = null
+	player.set_physics_process(true)
+	_hud_layer.visible = true
+	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+
+
+func _update_intro(delta: float) -> void:
+	# The ball loosens and glows as the mouse comes near the middle.
+	var size := get_viewport().get_visible_rect().size
+	var prox := intro_hover_override
+	if prox < 0.0:
+		var d := (get_viewport().get_mouse_position() - size * 0.5).length() / (size.y * 0.45)
+		prox = clampf(1.0 - d, 0.0, 1.0)
+	if intro != Intro.WAIT:
+		prox = 0.0
+	_intro_prox = lerpf(_intro_prox, prox, 1.0 - exp(-6.0 * delta))
+	var heat := _intro_heat if intro != Intro.WAIT else 0.35 + 1.6 * _intro_prox
+	var radius := 0.4 * (1.0 + 0.8 * _intro_prox)
+	for c in get_tree().get_nodes_in_group(&"point_clouds"):
+		var cloud := c as PointCloud
+		if cloud.gather <= 0.0:
+			continue
+		cloud.gather_center = _intro_centre  # (moving clouds: keep it in place)
+		cloud.gather_radius = radius
+		cloud.gather_heat = heat
+
+
+func _intro_click_hits(pos: Vector2) -> bool:
+	var size := get_viewport().get_visible_rect().size
+	return (pos - size * 0.5).length() < size.y * 0.16
 
 
 # ================================================================ world
@@ -291,6 +390,9 @@ func _crate_image() -> Image:
 # ================================================================ interaction
 
 func _process(delta: float) -> void:
+	if intro != Intro.NONE:
+		_update_intro(delta)
+		return
 	_update_target()
 	_update_bullets(delta)
 	_fire_cd -= delta
@@ -305,6 +407,11 @@ func _process(delta: float) -> void:
 
 
 func _unhandled_input(event: InputEvent) -> void:
+	if intro != Intro.NONE:
+		if intro == Intro.WAIT and event is InputEventMouseButton and event.pressed \
+				and event.button_index == MOUSE_BUTTON_LEFT and _intro_click_hits(event.position):
+			intro_bang()
+		return
 	if event.is_action_pressed("ui_cancel"):
 		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 	elif event is InputEventMouseButton and event.pressed and Input.mouse_mode != Input.MOUSE_MODE_CAPTURED:
@@ -486,6 +593,7 @@ func morph_target() -> void:
 func _build_hud() -> void:
 	var layer := CanvasLayer.new()
 	add_child(layer)
+	_hud_layer = layer
 	_info = Label.new()
 	_info.position = Vector2(16, 12)
 	_info.add_theme_color_override("font_shadow_color", Color.BLACK)

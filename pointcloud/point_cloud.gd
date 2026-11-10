@@ -224,6 +224,39 @@ static var _clock_frame := -1
 		wobble_speed = v
 		_sp(&"wobble_speed", v)
 
+@export_group("Singularity")
+## 1 = every atom is packed into a small swarming ball at gather_center.
+## Animate it to 0 for a big bang: the ball bursts and the atoms swarm to
+## their places. See gather_into() / big_bang().
+@export_range(0.0, 1.0) var gather := 0.0:
+	set(v):
+		var was := gather
+		gather = v
+		_sp(&"gather", v)
+		if (was > 0.0) != (v > 0.0):
+			_update_aabb()
+## Where the ball is, in world space.
+@export var gather_center := Vector3.ZERO:
+	set(v):
+		gather_center = v
+		if is_inside_tree():
+			_sp(&"gather_center", to_local(v))
+## Radius of the ball.
+@export var gather_radius := 0.4:
+	set(v):
+		gather_radius = v
+		_sp(&"gather_radius", v / maxf(_avg_scale(), 1e-6) if is_inside_tree() else v)
+## How far the burst throws the atoms before they swarm home.
+@export var gather_reach := 9.0:
+	set(v):
+		gather_reach = v
+		_sp(&"gather_reach", v)
+## White-hot glow of the gathered atoms.
+@export var gather_heat := 0.0:
+	set(v):
+		gather_heat = v
+		_sp(&"gather_heat", v)
+
 @export_group("Explode")
 @export var explode := 0.0:
 	set(v):
@@ -1131,7 +1164,7 @@ func _update_lod() -> void:
 	# Closer than full detail: amplify (more, smaller beads per point).
 	var amp := clampi(ceili(f), 1, max_amplification) if f > 1.0 else 1
 	f = minf(f, 1.0)
-	var interior := _has_debris or dissolve > 0.0 or explode != 0.0 or morph > 0.0
+	var interior := _has_debris or dissolve > 0.0 or explode != 0.0 or morph > 0.0 or gather > 0.0
 	var a := clampi(ceili(ns * f), mini(ns, LOD_MIN_POINTS), ns)
 	var b := ceili(ni * f) if interior else 0
 	if _proxy_on and not _has_debris:
@@ -1277,7 +1310,13 @@ static func _shared_chunk_mesh() -> ArrayMesh:
 
 func _update_aabb() -> void:
 	if data:
-		_set_custom_aabb(data.aabb)
+		var box := data.aabb
+		if gather > 0.0 and is_inside_tree():
+			# Gathered atoms are far from the model: keep the cloud from being
+			# culled while they're out there.
+			var r := (gather_reach * 1.6 + gather_radius) / maxf(_avg_scale(), 1e-6)
+			box = box.merge(AABB(to_local(gather_center) - Vector3.ONE * r, Vector3.ONE * r * 2.0))
+		_set_custom_aabb(box)
 
 
 func _set_custom_aabb(box: AABB) -> void:
