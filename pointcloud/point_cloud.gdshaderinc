@@ -123,7 +123,8 @@ uniform float gather_heat = 0.0;          // white-hot glow of gathered atoms
 uniform float gather_agitate = 0.0;       // 0..1: the ball shakes
 uniform float gather_burst = 11.0;        // how far the explosion throws atoms
 uniform vec2 gather_window = vec2(0.0, 1.0); // this cloud's share of the build (start, end)
-uniform bool gather_direct = false;       // true: atoms fly straight from the blast into place
+uniform int gather_mode = 0;              // 0 rained in from above, 1 straight from the cloud, 2 grown from the ground
+uniform float gather_floor = 0.0;         // ground height, local space (mode 2)
 uniform vec3 gather_eye = vec3(0.0);      // world: the build starts farthest from here
 // Element behaviour of loose atoms (see PointElement).
 uniform bool debris_lands = false;     // collide with the ground plane
@@ -644,17 +645,29 @@ void vertex() {
 		from = gather_center + vec3(rel.x * cos(wheel) - rel.z * sin(wheel), rel.y,
 				rel.x * sin(wheel) + rel.z * cos(wheel));
 
+		// The cloud thins out fast: within a moment of the blast three atoms
+		// in four have dwindled to nothing and the rest are faint specks, so
+		// the view is calm, not a field of grain. Those fade too in time.
+		float keep = hash01(gk + 73u) < 0.25 ? 1.0 : 1.0 - smoothstep(0.02, 0.09, x);
+		keep *= 1.0 - smoothstep(0.38, 0.52, x);
+		float speck = mix(3.2, 1.0, smoothstep(0.01, 0.08, x));
+
 		// Act 2, the world is built. Each cloud has its own window of the
 		// build (the ground first, say); within it the build starts farthest
-		// from the viewer and comes closer, bottom-up.
+		// from the viewer and comes closer.
 		vec3 wplace = (MODEL_MATRIX * vec4(place, 1.0)).xyz;
 		float eye_d = distance(wplace, gather_eye);
-		float order = 0.88 * (1.0 - clamp(eye_d / gather_reach, 0.0, 1.0))
-				+ 0.12 * clamp(wplace.y / 5.0, 0.0, 1.0);
+		float far_first = 1.0 - clamp(eye_d / gather_reach, 0.0, 1.0);
+		float order = 0.88 * far_first + 0.12 * clamp(wplace.y / 5.0, 0.0, 1.0);
+		if (gather_mode == 2) {
+			// Grown from the ground: strictly bottom to top within the model.
+			float hn = clamp((place.y - bounds_min.y) / max(bounds_size.y, 1e-4), 0.0, 1.0);
+			order = 0.45 * far_first + 0.55 * hn;
+		}
 		order = mix(gather_window.x, gather_window.y, order);
-		float start = 0.17 + 0.65 * order + (gather_direct ? 0.07 : 0.012) * seed;
-		float t = clamp((x - start) / (gather_direct ? 0.13 : 0.08), 0.0, 1.0);
-		if (gather_direct) {
+		float start = (gather_mode == 1 ? 0.045 : 0.08) + 0.74 * order + (gather_mode == 1 ? 0.06 : 0.012) * seed;
+		float t = clamp((x - start) / (gather_mode == 1 ? 0.115 : (gather_mode == 2 ? 0.1 : 0.08)), 0.0, 1.0);
+		if (gather_mode == 1) {
 			// Straight out of the cloud into place (floors), unhurried: each
 			// atom glides in on a smooth curve to just above its place, then
 			// settles the last little way like snow. Neighbours arrive at
@@ -663,22 +676,37 @@ void vertex() {
 			float e = t * t * t * (t * (t * 6.0 - 15.0) + 10.0);
 			float hover = point_spacing * 30.0 * (1.0 - smoothstep(0.7, 1.0, t));
 			p = mix(from, place + vec3(0.0, hover, 0.0), e);
-			gather_cap = mix(3.2, 1.2, smoothstep(0.0, 0.25, t));
+			size_scale *= max(keep, smoothstep(0.0, 0.2, t));
+			gather_cap = mix(speck, 1.2, smoothstep(0.0, 0.25, t));
 			gather_cap = mix(gather_cap, 4096.0, smoothstep(0.9, 1.0, t));
+		} else if (gather_mode == 2) {
+			// Grown out of the ground: each atom wells up from the floor
+			// directly below its place, so the model rises layer by layer.
+			if (t > 0.0) {
+				float e = 1.0 - pow(1.0 - t, 3.0);
+				vec3 root = vec3(place.x, gather_floor, place.z);
+				p = mix(root, place, e);
+				size_scale *= smoothstep(0.0, 0.15, t);
+				gather_cap = mix(1.4, 4096.0, smoothstep(0.8, 1.0, t));
+			} else {
+				p = from;
+				size_scale *= keep;
+				gather_cap = speck;
+			}
 		} else {
-			// Rained in from above: just before its turn an atom leaves the
-			// cloud for a point high over its place, out of the viewer's
-			// sight, then drops straight down, a speck until it lands.
+			// Rained in from above: the atom drops straight down from a point
+			// high over its place, out of the viewer's sight, a speck until
+			// it lands.
 			float high = (0.8 * eye_d + 8.0) * (0.9 + 0.2 * hash01(gk + 61u));
-			float rise = smoothstep(start - 0.07, start, x);
 			if (t > 0.0) {
 				float fall = 1.0 - pow(1.0 - t, 3.0);
 				p = place + vec3(0.0, high * (1.0 - fall), 0.0);
 				size_scale *= smoothstep(0.0, 0.12, t);
 				gather_cap = mix(1.4, 4096.0, smoothstep(0.82, 1.0, t));
 			} else {
-				p = mix(from, place + vec3(0.0, high, 0.0), rise * rise);
-				gather_cap = mix(3.2, 1.0, smoothstep(0.0, 0.4, rise));
+				p = from;
+				size_scale *= keep;
+				gather_cap = speck;
 			}
 		}
 		disp = max(disp, distance(p, place));

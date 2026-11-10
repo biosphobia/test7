@@ -103,12 +103,14 @@ func start_intro() -> void:
 		cloud.gather_burst = 220.0
 		# The floor is laid first, then everything on it, then the player.
 		if cloud in _ground_tiles:
-			cloud.gather_window = Vector2(0.0, 0.3)
-			cloud.gather_direct = true  # the scattered cloud falls straight into the floor
+			cloud.gather_window = Vector2(0.0, 0.25)
+			cloud.gather_mode = PointCloud.GatherMode.DIRECT  # the cloud settles into the floor
 		elif player.is_ancestor_of(cloud):
 			cloud.gather_window = Vector2(0.97, 1.0)
+			cloud.gather_mode = PointCloud.GatherMode.RAIN    # the player comes from above
 		else:
-			cloud.gather_window = Vector2(0.6, 0.95)
+			cloud.gather_window = Vector2(0.5, 0.9)
+			cloud.gather_mode = PointCloud.GatherMode.GROW    # objects rise out of the floor
 		cloud.gather = 1.0
 	# Beams of light that break out of the ball when it's clicked.
 	var layer := CanvasLayer.new()
@@ -145,14 +147,15 @@ func intro_bang() -> void:
 	# The flash of the explosion; the beams die with it.
 	tw.tween_property(self, "_intro_flash", 0.0, 0.8).from(1.0).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
 	tw.parallel().tween_property(self, "_intro_crack", 0.0, 0.5)
-	tw.tween_interval(10.2)
+	# The camera starts for the player's eyes while the body is still forming.
+	tw.tween_interval(7.3)
 	tw.tween_callback(func():
 		intro = Intro.ENTER
 		_intro_enter_from = _intro_cam.global_position)
 	# Into the player's eyes: one straight move along the line of sight.
 	tw.tween_method(func(k: float):
 		_intro_cam.global_position = _intro_enter_from.lerp(player.camera.global_position, k)
-		_intro_cam.fov = lerpf(60.0, player.camera.fov, k), 0.0, 1.0, 1.3).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
+		_intro_cam.fov = lerpf(60.0, player.camera.fov, k), 0.0, 1.0, 1.9).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
 	tw.tween_callback(_end_intro)
 
 
@@ -172,8 +175,8 @@ func _intro_release() -> void:
 		cloud.create_tween().tween_property(cloud, "gather", 0.0, 10.0)
 	# The haze gathers as the floor forms, swallowing the far-flung atoms.
 	var fog := create_tween()
-	fog.tween_interval(1.6)
-	fog.tween_property(_env, "fog_density", 1.0, 3.0)
+	fog.tween_interval(0.5)
+	fog.tween_property(_env, "fog_density", 1.0, 2.0)
 	# The blast shakes the camera hard and throws it back.
 	_intro_shake = 1.0
 	var back := _intro_cam.global_position + _intro_cam.global_basis.z * 6.0

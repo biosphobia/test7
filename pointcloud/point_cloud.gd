@@ -242,6 +242,7 @@ static var _clock_frame := -1
 		gather_center = v
 		if is_inside_tree():
 			_sp(&"gather_center", to_local(v))
+			_sp(&"gather_floor", (floor_y - global_position.y) / maxf(_avg_scale(), 1e-6))
 ## Radius of the ball.
 @export var gather_radius := 0.4:
 	set(v):
@@ -270,13 +271,16 @@ static var _clock_frame := -1
 	set(v):
 		gather_window = v
 		_sp(&"gather_window", v)
-## How atoms reach their places. False: each rises out of the scattered
-## cloud to a point high above its place and rains down (good for objects).
-## True: they fall straight out of the cloud into place (good for floors).
-@export var gather_direct := false:
+## How atoms reach their places in the build.
+enum GatherMode {
+	RAIN,    ## dropped in from high above (out of the viewer's sight)
+	DIRECT,  ## glide straight out of the scattered cloud and settle: floors
+	GROW,    ## well up from the ground below: the model rises from floor_y
+}
+@export var gather_mode := GatherMode.RAIN:
 	set(v):
-		gather_direct = v
-		_sp(&"gather_direct", v)
+		gather_mode = v
+		_sp(&"gather_mode", int(v))
 ## 0..1: how violently the ball shakes.
 @export var gather_agitate := 0.0:
 	set(v):
