@@ -627,7 +627,7 @@ void vertex() {
 		// Act 1, the explosion: an enormous force. Every atom is hurled
 		// straight out, each at its own speed, and keeps going until the air
 		// has taken its speed away far from the centre. No clumps, no jets.
-		float u = clamp(x / 0.22, 0.0, 1.0);
+		float u = clamp(x / 0.17, 0.0, 1.0);
 		float s1 = 1.0 - pow(1.0 - u, 4.0);
 		vec3 dirv = rand_dir(gk + 31u);
 		float speed = 0.3 + 0.7 * sqrt(hash01(gk + 13u));
@@ -652,16 +652,19 @@ void vertex() {
 		float order = 0.88 * (1.0 - clamp(eye_d / gather_reach, 0.0, 1.0))
 				+ 0.12 * clamp(wplace.y / 5.0, 0.0, 1.0);
 		order = mix(gather_window.x, gather_window.y, order);
-		float start = 0.2 + 0.58 * order + 0.012 * seed;
-		float t = clamp((x - start) / 0.08, 0.0, 1.0);
+		float start = 0.17 + 0.65 * order + (gather_direct ? 0.07 : 0.012) * seed;
+		float t = clamp((x - start) / (gather_direct ? 0.13 : 0.08), 0.0, 1.0);
 		if (gather_direct) {
-			// Straight out of the cloud into place (floors): the scattered
-			// atoms fall in from wherever they are, gathering speed.
-			float e = t * t * (3.0 - 2.0 * t);
-			e *= e;
-			p = mix(from, place, e);
-			gather_cap = mix(3.2, 1.4, smoothstep(0.0, 0.3, t));
-			gather_cap = mix(gather_cap, 4096.0, smoothstep(0.85, 1.0, t));
+			// Straight out of the cloud into place (floors), unhurried: each
+			// atom glides in on a smooth curve to just above its place, then
+			// settles the last little way like snow. Neighbours arrive at
+			// different moments, so the surface thickens gradually instead of
+			// advancing as a hard edge.
+			float e = t * t * t * (t * (t * 6.0 - 15.0) + 10.0);
+			float hover = point_spacing * 30.0 * (1.0 - smoothstep(0.7, 1.0, t));
+			p = mix(from, place + vec3(0.0, hover, 0.0), e);
+			gather_cap = mix(3.2, 1.2, smoothstep(0.0, 0.25, t));
+			gather_cap = mix(gather_cap, 4096.0, smoothstep(0.9, 1.0, t));
 		} else {
 			// Rained in from above: just before its turn an atom leaves the
 			// cloud for a point high over its place, out of the viewer's
@@ -681,7 +684,7 @@ void vertex() {
 		disp = max(disp, distance(p, place));
 		// Everything is white until the whole world stands; then each atom
 		// takes on its own colour (and the surface texture) at its own pace.
-		float own = clamp((x - 0.86 - 0.05 * hash01(gk + 51u)) / (0.04 + 0.05 * hash01(gk + 53u)), 0.0, 1.0);
+		float own = clamp((x - 0.9 - 0.03 * hash01(gk + 51u)) / (0.03 + 0.04 * hash01(gk + 53u)), 0.0, 1.0);
 		own = own * own * (3.0 - 2.0 * own);
 		c = vec4(mix(vec3(1.0), c.rgb, own), c.a * own);
 		// The ball glows a little (warm), more when it is disturbed.

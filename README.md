@@ -38,9 +38,10 @@ and glows as the mouse comes near. Click it and it cracks five times: with
 each crack two beams of light break out, the ball jolts and the camera
 lurches a quarter of the way closer. The beams go out, the ball holds still
 for a moment, and then it explodes with a hard screen shake: every atom is
-hurled far out in all directions, a cloud that keeps drifting and slowly
-wheeling. The floor is built first and fast: its atoms fall straight out of
-the cloud into place, from the far end towards the viewer. Then everything
+hurled far out in all directions, a thin cloud that keeps drifting and
+slowly wheeling. The floor is built first: its atoms glide out of the cloud
+and settle into place, the surface thickening gradually from the far end
+towards the viewer while a haze gathers and swallows the rest of the cloud. Then everything
 on it is formed by a fine rain of specks from above, then the player. The whole intro is seen from straight behind the player's eyes. Only when it all stands do the atoms take on their colours. The
 camera then drops into the player's head and hands over control.
 

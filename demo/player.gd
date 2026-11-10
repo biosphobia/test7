@@ -49,7 +49,7 @@ func _ready() -> void:
 	camera = Camera3D.new()
 	camera.fov = 75.0
 	camera.near = 0.05
-	camera.far = 300.0
+	camera.far = 60.0  # short view distance; fog hides the edge
 	camera.cull_mask = 0xFFFFF & ~BODY_LAYER
 	_cam_pivot.add_child(camera)
 	camera.current = true

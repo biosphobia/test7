@@ -32,6 +32,7 @@ var _intro_crack := 0.0
 var _intro_jolt := 0.0
 var _intro_shake := 0.0
 var _intro_hush := 0.0
+var _env: Environment
 var _intro_enter_from := Vector3.ZERO
 var _intro_flash := 0.0
 var _intro_rays: ColorRect
@@ -83,9 +84,10 @@ func start_intro() -> void:
 	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 	player.set_physics_process(false)
 	_hud_layer.visible = false
+	_env.fog_density = 0.0  # clear air: the blast is seen all the way out
 	_intro_cam = Camera3D.new()
 	_intro_cam.fov = 60.0
-	_intro_cam.far = 300.0
+	_intro_cam.far = 400.0
 	add_child(_intro_cam)
 	# Straight behind the player's eyes, looking the same way: the whole
 	# intro is seen along the player's own line of sight, and entering the
@@ -98,15 +100,15 @@ func start_intro() -> void:
 		var cloud := c as PointCloud
 		cloud.gather_center = _intro_centre
 		cloud.gather_reach = 50.0
-		cloud.gather_burst = 70.0
+		cloud.gather_burst = 220.0
 		# The floor is laid first, then everything on it, then the player.
 		if cloud in _ground_tiles:
-			cloud.gather_window = Vector2(0.0, 0.17)
+			cloud.gather_window = Vector2(0.0, 0.3)
 			cloud.gather_direct = true  # the scattered cloud falls straight into the floor
 		elif player.is_ancestor_of(cloud):
-			cloud.gather_window = Vector2(0.92, 1.0)
+			cloud.gather_window = Vector2(0.97, 1.0)
 		else:
-			cloud.gather_window = Vector2(0.4, 0.9)
+			cloud.gather_window = Vector2(0.6, 0.95)
 		cloud.gather = 1.0
 	# Beams of light that break out of the ball when it's clicked.
 	var layer := CanvasLayer.new()
@@ -143,7 +145,7 @@ func intro_bang() -> void:
 	# The flash of the explosion; the beams die with it.
 	tw.tween_property(self, "_intro_flash", 0.0, 0.8).from(1.0).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
 	tw.parallel().tween_property(self, "_intro_crack", 0.0, 0.5)
-	tw.tween_interval(8.0)
+	tw.tween_interval(10.2)
 	tw.tween_callback(func():
 		intro = Intro.ENTER
 		_intro_enter_from = _intro_cam.global_position)
@@ -167,7 +169,11 @@ func _intro_crack_step(i: int) -> void:
 func _intro_release() -> void:
 	for c in get_tree().get_nodes_in_group(&"point_clouds"):
 		var cloud := c as PointCloud
-		cloud.create_tween().tween_property(cloud, "gather", 0.0, 7.8)
+		cloud.create_tween().tween_property(cloud, "gather", 0.0, 10.0)
+	# The haze gathers as the floor forms, swallowing the far-flung atoms.
+	var fog := create_tween()
+	fog.tween_interval(1.6)
+	fog.tween_property(_env, "fog_density", 1.0, 3.0)
 	# The blast shakes the camera hard and throws it back.
 	_intro_shake = 1.0
 	var back := _intro_cam.global_position + _intro_cam.global_basis.z * 6.0
@@ -180,6 +186,7 @@ func _intro_release() -> void:
 func _end_intro() -> void:
 	intro = Intro.NONE
 	player.camera.current = true
+	_env.fog_density = 1.0
 	_intro_cam.queue_free()
 	_intro_cam = null
 	_intro_rays.get_parent().queue_free()
@@ -238,22 +245,30 @@ func _setup_environment() -> void:
 	var sky_mat := ProceduralSkyMaterial.new()
 	sky_mat.sky_top_color = Color(0.05, 0.07, 0.14)
 	sky_mat.sky_horizon_color = Color(0.32, 0.26, 0.36)
-	sky_mat.ground_bottom_color = Color(0.02, 0.02, 0.03)
+	sky_mat.ground_bottom_color = Color(0.32, 0.26, 0.36)  # same haze below the horizon
 	sky_mat.ground_horizon_color = Color(0.32, 0.26, 0.36)
 	var sky := Sky.new()
 	sky.sky_material = sky_mat
 	var env := Environment.new()
+	_env = env
 	env.background_mode = Environment.BG_SKY
 	env.sky = sky
 	env.ambient_light_source = Environment.AMBIENT_SOURCE_SKY
 	env.ambient_light_energy = 1.2
+	# Distance fog in the colour of the horizon: the far edges of the floor
+	# melt into the sky instead of ending in a hard line.
+	env.fog_enabled = true
+	env.fog_mode = Environment.FOG_MODE_DEPTH
+	env.fog_light_color = Color(0.32, 0.26, 0.36)
+	env.fog_light_energy = 1.0
+	env.fog_depth_begin = 14.0
+	env.fog_depth_end = 42.0
+	env.fog_density = 1.0
+	env.fog_sky_affect = 0.0
 	env.tonemap_mode = Environment.TONE_MAPPER_FILMIC
 	env.glow_enabled = true
 	env.glow_intensity = 0.6
 	env.glow_bloom = 0.05
-	env.fog_enabled = true
-	env.fog_light_color = Color(0.2, 0.18, 0.26)
-	env.fog_density = 0.012
 	var we := WorldEnvironment.new()
 	we.environment = env
 	add_child(we)
