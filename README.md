@@ -39,15 +39,16 @@ each crack two beams of light break out, the ball jolts and the camera
 lurches a quarter of the way closer. The beams go out, the ball holds still
 for a moment, and then it explodes with a hard screen shake: every atom is
 hurled out sideways in a ring, thinning above and below it, and is carried
-out of sight into the haze. The floor forms first: its atoms come back out
-of the haze low over the ground and settle into place, the surface
-thickening from the far end towards the viewer. Everything on it then rises up through the floor, each object in one
-piece. The player is rained in from above last, and the camera is already
-moving into the player's eyes while the body forms, cutting cleanly through
-it so that the hand-over to the player's own view is seamless. Each atom
-takes on its colour shortly after it lands, so colour spreads through the
-world in the order it was built, and is complete before control begins. The whole intro is seen from straight behind the
-player's eyes.
+out of sight into the haze; only the player's atoms stay, a thin scatter of
+specks in the sky. The floor forms first: its atoms come back out of the
+haze low over the ground and settle into place, the surface thickening from
+the far end towards the viewer. Everything on it then rises up through the
+floor, each object in one piece. Last, the specks in the sky swoop down and
+form the player, while the camera is already moving into the player's eyes;
+the body thins away as it arrives, so the hand-over to the player's own view
+is seamless. Everything is white until then: the moment control begins,
+colour sweeps through the world in the order it was built. The whole intro
+is seen from straight behind the player's eyes.
 
 | Input | Action |
 |---|---|

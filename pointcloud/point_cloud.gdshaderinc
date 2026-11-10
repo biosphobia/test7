@@ -125,6 +125,7 @@ uniform float gather_burst = 11.0;        // how far the explosion throws atoms
 uniform vec2 gather_window = vec2(0.0, 1.0); // this cloud's share of the build (start, end)
 uniform int gather_mode = 0;              // 0 rained in from above, 1 straight from the cloud, 2 grown from the ground
 uniform float gather_floor = 0.0;         // ground height, local space (mode 2)
+uniform float gather_color_at = 0.8;       // progress (0..1) at which colour starts to come in
 uniform float view_fade = 1.0;            // 1 = fully there, 0 = invisible in the view (shadow stays)
 uniform float gather_flat = 0.22;         // blast: 0 = a flat ring, 2 = roughly a sphere
 uniform vec3 gather_eye = vec3(0.0);      // world: the build starts farthest from here
@@ -644,10 +645,11 @@ void vertex() {
 		vec3 blown = dirv * gather_burst * speed * s1;
 		if (gather_mode == 0) {
 			// Atoms of a cloud that is rained in (the player) are not thrown
-			// out of sight: they are tossed up into the sky above the scene,
-			// an even, sparse scatter of specks that waits there.
-			vec3 up_dir = normalize(vec3(cos(ring_a), 0.25 + 1.6 * hash01(gk + 37u), sin(ring_a)));
-			blown = up_dir * (5.0 + 13.0 * sqrt(hash01(gk + 39u))) * s1;
+			// out of sight. The blast flings them, in an instant, into a wide,
+			// thin scatter of specks high over the scene, where they wait.
+			float quick = 1.0 - pow(1.0 - clamp(x / 0.03, 0.0, 1.0), 4.0);
+			vec3 up_dir = normalize(vec3(cos(ring_a), 0.2 + 1.3 * hash01(gk + 37u), sin(ring_a)));
+			blown = up_dir * (9.0 + 19.0 * sqrt(hash01(gk + 39u))) * quick;
 		}
 		// (still drifting slowly outwards while it waits)
 		blown *= 1.0 + 0.25 * x;
@@ -719,11 +721,12 @@ void vertex() {
 			gather_cap = mix(speck, 4096.0, smoothstep(0.85, 1.0, t));
 		}
 		disp = max(disp, distance(p, place));
-		// An atom is white until it is in place. Soon after, it takes on its
-		// own colour (and the surface texture): colour spreads through the
-		// world in the order it was built, with a little randomness.
+		// Everything stays white until gather_color_at (when the viewer takes
+		// over). Colour then sweeps through the world in the order it was
+		// built, with a little randomness.
 		float landed = gather_mode == 1 ? start + 0.115 : (gather_mode == 2 ? cloud_start + 0.14 : start + 0.08);
-		float own = clamp((x - landed - 0.015 - 0.035 * hash01(gk + 51u)) / (0.03 + 0.04 * hash01(gk + 53u)), 0.0, 1.0);
+		float own = clamp((x - gather_color_at - 0.11 * landed - 0.02 * hash01(gk + 51u))
+				/ (0.03 + 0.03 * hash01(gk + 53u)), 0.0, 1.0);
 		own = own * own * (3.0 - 2.0 * own);
 		c = vec4(mix(vec3(1.0), c.rgb, own), c.a * own);
 		// The ball glows a little (warm), more when it is disturbed.

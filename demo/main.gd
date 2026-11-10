@@ -100,6 +100,7 @@ func start_intro() -> void:
 		cloud.gather_center = _intro_centre
 		cloud.gather_reach = 50.0
 		cloud.gather_burst = 90.0  # just beyond the haze
+		cloud.gather_color_at = 0.79  # the moment control is handed over
 		# The floor is laid first, then everything on it, then the player.
 		if cloud in _ground_tiles:
 			cloud.gather_window = Vector2(0.0, 0.25)

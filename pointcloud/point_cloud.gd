@@ -289,6 +289,12 @@ enum GatherMode {
 	set(v):
 		gather_mode = v
 		_sp(&"gather_mode", int(v))
+## Progress of the release (1 - gather) at which colour starts to come in;
+## until then every atom is white.
+@export_range(0.0, 1.0) var gather_color_at := 0.8:
+	set(v):
+		gather_color_at = v
+		_sp(&"gather_color_at", v)
 ## 0..1: how violently the ball shakes.
 @export var gather_agitate := 0.0:
 	set(v):
