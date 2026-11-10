@@ -123,7 +123,7 @@ uniform float gather_heat = 0.0;          // white-hot glow of gathered atoms
 uniform float gather_agitate = 0.0;       // 0..1: the ball shakes
 uniform float gather_burst = 11.0;        // how far the explosion throws atoms
 uniform vec2 gather_window = vec2(0.0, 1.0); // this cloud's share of the build (start, end)
-uniform float gather_tile = 0.0;          // > 0: built cell by cell (world units)
+uniform bool gather_direct = false;       // true: atoms fly straight from the blast into place
 uniform vec3 gather_eye = vec3(0.0);      // world: the build starts farthest from here
 // Element behaviour of loose atoms (see PointElement).
 uniform bool debris_lands = false;     // collide with the ground plane
@@ -636,52 +636,47 @@ void vertex() {
 		blown *= 1.0 + 0.25 * x;
 		vec3 from = gather_center + mix(sing, blown, smoothstep(0.0, 0.02, x));
 
-		// Act 2, the world is built: every atom drops into its place from
-		// above. Each cloud has its own window of the build (the ground
-		// first, say); within it the build starts farthest from the viewer
-		// and comes closer, bottom-up.
+
+		// The scattered cloud never hangs still: it keeps drifting outwards
+		// and slowly wheels around the vertical axis.
+		float wheel = (x - 0.05) * (1.2 + 1.2 * hash01(gk + 67u));
+		vec3 rel = from - gather_center;
+		from = gather_center + vec3(rel.x * cos(wheel) - rel.z * sin(wheel), rel.y,
+				rel.x * sin(wheel) + rel.z * cos(wheel));
+
+		// Act 2, the world is built. Each cloud has its own window of the
+		// build (the ground first, say); within it the build starts farthest
+		// from the viewer and comes closer, bottom-up.
 		vec3 wplace = (MODEL_MATRIX * vec4(place, 1.0)).xyz;
-		vec3 oplace = wplace;
-		float jitter = 0.012 * seed;
-		float cell_rand = 0.0;
-		if (gather_tile > 0.0) {
-			// Tiled: every atom of a grid cell shares its cell's timing, so
-			// the cell arrives as one slab; cells go at slightly random times.
-			vec2 cell = floor(wplace.xz / gather_tile);
-			oplace = vec3((cell.x + 0.5) * gather_tile, wplace.y, (cell.y + 0.5) * gather_tile);
-			cell_rand = hash01(uint(int(cell.x) + 4096) * 7919u + uint(int(cell.y) + 4096) * 104729u);
-			jitter = 0.035 * cell_rand;
-		}
-		float eye_d = distance(oplace, gather_eye);
+		float eye_d = distance(wplace, gather_eye);
 		float order = 0.88 * (1.0 - clamp(eye_d / gather_reach, 0.0, 1.0))
-				+ 0.12 * clamp(oplace.y / 5.0, 0.0, 1.0);
+				+ 0.12 * clamp(wplace.y / 5.0, 0.0, 1.0);
 		order = mix(gather_window.x, gather_window.y, order);
-		float start = 0.22 + 0.56 * order + jitter;
+		float start = 0.2 + 0.58 * order + 0.012 * seed;
 		float t = clamp((x - start) / 0.08, 0.0, 1.0);
-		// Staging point: high enough to be above the top of the view
-		// wherever the place is.
-		float high = (0.8 * distance(wplace, gather_eye) + 8.0) * (0.9 + 0.2 * hash01(gk + 61u));
-		if (t > 0.0) {
-			// Dropping in: fast, settling at the end. Tiles fall a short way
-			// as solid slabs; everything else rains down from the staging
-			// point as specks that reach full size only as they land.
-			float fall = 1.0 - pow(1.0 - t, 3.0);
-			float drop = gather_tile > 0.0 ? 2.5 + 2.5 * cell_rand : high;
-			p = place + vec3(0.0, drop * (1.0 - fall), 0.0);
-			size_scale *= smoothstep(0.0, 0.12, t);
-			gather_cap = gather_tile > 0.0 ? 4096.0 : mix(1.4, 4096.0, smoothstep(0.82, 1.0, t));
+		if (gather_direct) {
+			// Straight out of the cloud into place (floors): the scattered
+			// atoms fall in from wherever they are, gathering speed.
+			float e = t * t * (3.0 - 2.0 * t);
+			e *= e;
+			p = mix(from, place, e);
+			gather_cap = mix(3.2, 1.4, smoothstep(0.0, 0.3, t));
+			gather_cap = mix(gather_cap, 4096.0, smoothstep(0.85, 1.0, t));
 		} else {
-			// Waiting its turn: no atom ever hangs still. Straight from the
-			// blast each one sweeps on up into the sky to its staging point,
-			// leaving the view through the top.
-			float w = smoothstep(0.1, min(start, 0.36), x);
-			// (Staging points are spread out sideways, so atoms bound for the
-			// same spot don't bunch into clusters on the way up.)
-			vec3 stage = place + vec3(0.0, high, 0.0) + rand_dir(gk + 71u) * high * 0.35;
-			p = mix(from, stage, w);
-			// ...thinning to the finest specks on the way, so the sweep reads
-			// as a mist rising, not a storm of grain.
-			gather_cap = mix(3.2, 1.0, smoothstep(0.0, 0.3, w));
+			// Rained in from above: just before its turn an atom leaves the
+			// cloud for a point high over its place, out of the viewer's
+			// sight, then drops straight down, a speck until it lands.
+			float high = (0.8 * eye_d + 8.0) * (0.9 + 0.2 * hash01(gk + 61u));
+			float rise = smoothstep(start - 0.07, start, x);
+			if (t > 0.0) {
+				float fall = 1.0 - pow(1.0 - t, 3.0);
+				p = place + vec3(0.0, high * (1.0 - fall), 0.0);
+				size_scale *= smoothstep(0.0, 0.12, t);
+				gather_cap = mix(1.4, 4096.0, smoothstep(0.82, 1.0, t));
+			} else {
+				p = mix(from, place + vec3(0.0, high, 0.0), rise * rise);
+				gather_cap = mix(3.2, 1.0, smoothstep(0.0, 0.4, rise));
+			}
 		}
 		disp = max(disp, distance(p, place));
 		// Everything is white until the whole world stands; then each atom

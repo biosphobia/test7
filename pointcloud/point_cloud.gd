@@ -270,13 +270,13 @@ static var _clock_frame := -1
 	set(v):
 		gather_window = v
 		_sp(&"gather_window", v)
-## Above 0, the cloud is built tile by tile: all atoms in a square of this
-## size (world units, on the ground plane) arrive together as one slab, the
-## squares at slightly random moments. For floors.
-@export var gather_tile := 0.0:
+## How atoms reach their places. False: each rises out of the scattered
+## cloud to a point high above its place and rains down (good for objects).
+## True: they fall straight out of the cloud into place (good for floors).
+@export var gather_direct := false:
 	set(v):
-		gather_tile = v
-		_sp(&"gather_tile", v)
+		gather_direct = v
+		_sp(&"gather_direct", v)
 ## 0..1: how violently the ball shakes.
 @export var gather_agitate := 0.0:
 	set(v):

@@ -101,12 +101,12 @@ func start_intro() -> void:
 		cloud.gather_burst = 70.0
 		# The floor is laid first, then everything on it, then the player.
 		if cloud in _ground_tiles:
-			cloud.gather_window = Vector2(0.0, 0.42)
-			cloud.gather_tile = 2.0  # the floor arrives one grid square at a time
+			cloud.gather_window = Vector2(0.0, 0.17)
+			cloud.gather_direct = true  # the scattered cloud falls straight into the floor
 		elif player.is_ancestor_of(cloud):
-			cloud.gather_window = Vector2(0.88, 1.0)
+			cloud.gather_window = Vector2(0.92, 1.0)
 		else:
-			cloud.gather_window = Vector2(0.42, 0.88)
+			cloud.gather_window = Vector2(0.4, 0.9)
 		cloud.gather = 1.0
 	# Beams of light that break out of the ball when it's clicked.
 	var layer := CanvasLayer.new()
