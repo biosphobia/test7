@@ -408,6 +408,7 @@ void vertex() {
 	float glow = 0.0;
 	float fly = 0.0; // how much this dot is "in flight" (0 = on the surface)
 	float disp = 0.0; // how far effects have carried it from its place
+	float gather_cap = 4096.0; // pixel-size limit while being built (singularity)
 	bool at_rest = still && !use_skin;
 	vec4 st = vec4(-1.0);
 	float morph_t = 0.0; // this dot's progress towards the morph target
@@ -634,25 +635,33 @@ void vertex() {
 		blown *= 1.0 + 0.25 * x;
 		vec3 from = gather_center + mix(sing, blown, smoothstep(0.0, 0.02, x));
 
-		// Act 2, the world is built: atoms come back in to their places the way
-		// a digital world assembles: along the axes (x, then z, then y), snapped
-		// to a coarse grid of "pixels" until they slot in. Each cloud has its
-		// own window of the build (the ground first, say); within it the
-		// build starts farthest from the viewer and comes closer, bottom-up.
+		// The scattered atoms shrink away as they recede, until the sky is clear.
+		float gone = smoothstep(0.1, 0.22, x);
+
+		// Act 2, the world is built: every atom drops into its place from
+		// high above, out of the viewer's sight, straight down like rain, tiny
+		// while it falls. Each cloud has its own window of the build (the
+		// ground first, say); within it the build starts farthest from the
+		// viewer and comes closer, bottom-up.
 		vec3 wplace = (MODEL_MATRIX * vec4(place, 1.0)).xyz;
-		float order = 0.88 * (1.0 - clamp(distance(wplace, gather_eye) / gather_reach, 0.0, 1.0))
+		float eye_d = distance(wplace, gather_eye);
+		float order = 0.88 * (1.0 - clamp(eye_d / gather_reach, 0.0, 1.0))
 				+ 0.12 * clamp(wplace.y / 5.0, 0.0, 1.0);
 		order = mix(gather_window.x, gather_window.y, order);
-		float start = 0.22 + 0.56 * order + 0.01 * seed;
-		float t = clamp((x - start) / 0.07, 0.0, 1.0);
-		float tx = smoothstep(0.0, 1.0, clamp(t * 3.0, 0.0, 1.0));
-		float tz = smoothstep(0.0, 1.0, clamp(t * 3.0 - 1.0, 0.0, 1.0));
-		float ty = smoothstep(0.0, 1.0, clamp(t * 3.0 - 2.0, 0.0, 1.0));
-		vec3 q = vec3(mix(from.x, place.x, tx), mix(from.y, place.y, ty), mix(from.z, place.z, tz));
-		float cell = 0.22;
-		float snap = smoothstep(0.0, 0.08, t) * (1.0 - smoothstep(0.75, 1.0, t));
-		q = mix(q, (floor(q / cell) + 0.5) * cell, snap);
-		p = q;
+		float start = 0.22 + 0.56 * order + 0.012 * seed;
+		float t = clamp((x - start) / 0.08, 0.0, 1.0);
+		// High enough to be above the top of the view wherever the place is.
+		float drop = (0.8 * eye_d + 8.0) * (0.9 + 0.2 * hash01(gk + 61u));
+		float fall = 1.0 - pow(1.0 - t, 3.0); // fast, settling at the end
+		if (t > 0.0) {
+			p = place + vec3(0.0, drop * (1.0 - fall), 0.0);
+			size_scale *= smoothstep(0.0, 0.12, t);
+		} else {
+			p = from;
+			size_scale *= 1.0 - gone;
+		}
+		// Falling atoms are specks; they reach full size only as they land.
+		gather_cap = mix(1.4, 4096.0, smoothstep(0.82, 1.0, t));
 		disp = max(disp, distance(p, place));
 		// Everything is white until the whole world stands; then each atom
 		// takes on its own colour (and the surface texture) at its own pace.
@@ -738,7 +747,8 @@ void vertex() {
 	// (Interior points are always held to it: they never have to close a surface.)
 	float loose = on_surface ? max(smoothstep(0.0, agap * 2.0, disp), fly) : 1.0;
 	float px_cap = mix(max_pixel_size, clamp(target_px * cover, 1.5, atom_max_px), shadow_pass ? 0.0 : loose);
-	POINT_SIZE = v_alive > 0.5 ? clamp(px, min_pixel_size, px_cap) : 1.0;
+	px_cap = shadow_pass ? px_cap : min(px_cap, gather_cap);
+	POINT_SIZE = v_alive > 0.5 ? clamp(px, min(min_pixel_size, px_cap), px_cap) : 1.0;
 	v_px = POINT_SIZE;
 	// Sizes in view space, corrected for the pixel clamp.
 	float clamp_ratio = POINT_SIZE / max(px, 1e-4);
