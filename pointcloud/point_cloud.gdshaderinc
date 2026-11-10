@@ -641,10 +641,14 @@ void vertex() {
 				* (hash01(gk + 35u) < 0.5 ? -1.0 : 1.0);
 		vec3 dirv = normalize(vec3(cos(ring_a), lift, sin(ring_a)));
 		float speed = mix(0.6, 1.0, pow(hash01(gk + 13u), 0.4));
-		// Atoms thrown well above or below the ring don't go as far: they stay
-		// in sight as a sparse drift of specks until they are needed.
-		float near_sky = smoothstep(0.12, 0.45, abs(dirv.y));
-		vec3 blown = dirv * gather_burst * speed * s1 * mix(1.0, 0.16, near_sky);
+		vec3 blown = dirv * gather_burst * speed * s1;
+		if (gather_mode == 0) {
+			// Atoms of a cloud that is rained in (the player) are not thrown
+			// out of sight: they are tossed up into the sky above the scene,
+			// an even, sparse scatter of specks that waits there.
+			vec3 up_dir = normalize(vec3(cos(ring_a), 0.25 + 1.6 * hash01(gk + 37u), sin(ring_a)));
+			blown = up_dir * (5.0 + 13.0 * sqrt(hash01(gk + 39u))) * s1;
+		}
 		// (still drifting slowly outwards while it waits)
 		blown *= 1.0 + 0.25 * x;
 		vec3 from = gather_center + mix(sing, blown, smoothstep(0.0, 0.02, x));
@@ -703,31 +707,16 @@ void vertex() {
 				gather_cap = 4096.0;
 				t = g;
 			} else {
-				// Just before the model surfaces, its atoms stream down out of
-				// the sky and sink into the floor where it will rise.
-				float dive = smoothstep(cloud_start - 0.09, cloud_start, x);
-				vec3 root = vec3(place.x, gather_floor - point_spacing * 4.0, place.z);
-				p = mix(from, root, dive * dive);
-				size_scale *= 1.0 - smoothstep(0.97, 1.0, dive);
+				p = from;
 				gather_cap = speck;
 			}
 		} else {
-			// Rained in from above: the atom drops straight down from a point
-			// high over its place, out of the viewer's sight, a speck until
-			// it lands.
-			float high = (0.8 * eye_d + 8.0) * (0.9 + 0.2 * hash01(gk + 61u));
-			if (t > 0.0) {
-				float fall = 1.0 - pow(1.0 - t, 3.0);
-				p = place + vec3(0.0, high * (1.0 - fall), 0.0);
-				size_scale *= smoothstep(0.0, 0.12, t);
-				gather_cap = mix(1.4, 4096.0, smoothstep(0.82, 1.0, t));
-			} else {
-				// Before its turn the atom climbs from wherever the blast left
-				// it to its drop point.
-				float rise = smoothstep(start - 0.08, start, x);
-				p = mix(from, place + vec3(0.0, high, 0.0), rise * rise);
-				gather_cap = speck;
-			}
+			// Rained in from the sky: when its turn comes the atom leaves its
+			// spot in the scatter overhead and swoops down into place, a speck
+			// until it lands.
+			float e = t * t * (3.0 - 2.0 * t);
+			p = mix(from, place, e) + vec3(0.0, sin(e * PI) * 0.8, 0.0);
+			gather_cap = mix(speck, 4096.0, smoothstep(0.85, 1.0, t));
 		}
 		disp = max(disp, distance(p, place));
 		// An atom is white until it is in place. Soon after, it takes on its

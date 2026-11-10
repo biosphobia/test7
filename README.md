@@ -159,7 +159,7 @@ point_cloud.gdshader           draws up to `max_amplification` beads per point; 
   an explosion that hurls every atom out in a ring (`gather_burst`,
   `gather_flat`), far enough to vanish into the fog; a build; and finally
   colour. `gather_mode`
-  picks how a cloud is built: `RAIN` (atoms drop in from high above),
+  picks how a cloud is built: `RAIN` (atoms wait as a scatter in the sky and swoop down into place),
   `DIRECT` (they skim back in low over the ground and settle: floors) or
   `GROW` (the whole model rises through the ground at `floor_y` in one
   piece). `gather_window` gives a cloud its share of the build;

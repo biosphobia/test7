@@ -281,7 +281,7 @@ static var _clock_frame := -1
 		_sp(&"gather_window", v)
 ## How atoms reach their places in the build.
 enum GatherMode {
-	RAIN,    ## dropped in from high above (out of the viewer's sight)
+	RAIN,    ## wait as a sparse scatter in the sky, then swoop down into place
 	DIRECT,  ## glide straight out of the scattered cloud and settle: floors
 	GROW,    ## the whole model rises through the floor (floor_y) in one piece
 }
