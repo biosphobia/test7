@@ -287,6 +287,19 @@ static var _clock_frame := -1
 	set(v):
 		debris_lifetime = v
 		_sp(&"debris_lifetime", v)
+## What this cloud's atoms are made of: how they behave once knocked loose
+## (weight, bounce, whether they land and stay...). See PointElement.
+## Null = glowing embers that drift off and fade, using the debris_* values.
+@export var element: PointElement:
+	set(v):
+		element = v
+		_apply_element()
+## World height of the ground that loose atoms land on (elements with
+## `lands`). The cloud is assumed to stand upright.
+@export var floor_y := 0.0:
+	set(v):
+		floor_y = v
+		_apply_element()
 @export var debris_gravity := Vector3(0, -3, 0):
 	set(v):
 		debris_gravity = v
@@ -336,6 +349,7 @@ var _colors_dirty := false
 var _carves: Array[PackedFloat32Array] = []  # cx, cy, cz, t0, radius, force, ragged, seed
 var _carve_a := PackedVector4Array()
 var _carve_b := PackedVector4Array()
+var _carve_c := PackedVector4Array()   # xyz kick direction (local)
 var _last_carve_time := -100.0
 var _bake_task := -1
 var _bake_job: _BakeJob
@@ -382,6 +396,7 @@ func _init() -> void:
 	_sp(&"impact_params", _impact_params)
 	_carve_a.resize(MAX_CARVES)
 	_carve_b.resize(MAX_CARVES)
+	_carve_c.resize(MAX_CARVES)
 	_sp(&"carve_a", _carve_a)
 	_sp(&"carve_b", _carve_b)
 	_sp(&"carve_count", 0)
@@ -393,6 +408,7 @@ func _init() -> void:
 			&"dissolve_drift", &"dissolve_edge_color", &"glow_strength", &"morph", &"morph_stagger",
 			&"morph_arc", &"debris_lifetime", &"debris_gravity", &"beads", &"bead_overlap", &"splats", &"clip_to_bounds", &"texture_tile", &"texture_offset"]:
 		_sp(p, get(p))
+	_apply_element()
 
 
 func _enter_tree() -> void:
@@ -578,22 +594,47 @@ func paint(world_pos: Vector3, radius: float, color: Color, hardness := 0.5) -> 
 ## debris_lifetime; the dots around the hole become its wall (normals facing
 ## into it, darkened like a cavity).
 ##
+## `kick` (world direction, length around 1) throws the debris that way on top
+## of the outward burst: pass the reverse of a bullet's direction and the
+## chips spray back out of the hole towards the shooter.
+##
 ## Costs almost nothing on the main thread: the carve is handed to the shader
 ## as a sphere, and a worker thread later folds batches of carves into the
 ## debris texture using exactly the same maths.
-func carve(world_pos: Vector3, radius: float, force := 2.0, ragged := 0.35) -> void:
+func carve(world_pos: Vector3, radius: float, force := 2.0, ragged := 0.35, kick := Vector3.ZERO) -> void:
 	if data == null or data.size() == 0:
 		return
+	if element:
+		radius /= maxf(element.hardness, 0.05)
+		force *= element.scatter
+		_apply_element()  # the ground height follows the cloud's position
 	if _carves.size() >= MAX_CARVES:
 		_bake_now()
 	var c := _world_to_rest(world_pos)
 	var seed := randi() & 0xFFFFFF
-	_carves.append(PackedFloat32Array([c.x, c.y, c.z, now(), radius / _avg_scale(), force, ragged, float(seed)]))
+	var lk := global_transform.basis.orthonormalized().inverse() * kick
+	_carves.append(PackedFloat32Array([c.x, c.y, c.z, now(), radius / _avg_scale(), force, ragged, float(seed),
+			lk.x, lk.y, lk.z]))
 	_last_carve_time = now()
 	_has_debris = true
 	_sp(&"has_debris", true)
 	_push_carves()
 	prepare_interaction()  # make sure the grid exists for baking
+
+
+func _apply_element() -> void:
+	if _mat == null:
+		return
+	var e := element
+	_sp(&"debris_lands", e != null and e.lands)
+	_sp(&"debris_bounce", e.bounce if e else 0.3)
+	_sp(&"debris_friction", e.friction if e else 0.4)
+	_sp(&"debris_drag", e.drag if e else 0.0)
+	_sp(&"debris_glow", e.glow if e else 1.0)
+	_sp(&"debris_lifetime", e.lifetime if e else debris_lifetime)
+	_sp(&"debris_gravity", Vector3(0, -e.gravity, 0) if e else debris_gravity)
+	if is_inside_tree():
+		_sp(&"debris_floor_y", (floor_y - global_position.y) / maxf(_avg_scale(), 1e-6))
 
 
 func _push_carves() -> void:
@@ -602,11 +643,14 @@ func _push_carves() -> void:
 			var k := _carves[i]
 			_carve_a[i] = Vector4(k[0], k[1], k[2], k[3])
 			_carve_b[i] = Vector4(k[4], k[5], k[6], k[7])
+			_carve_c[i] = Vector4(k[8], k[9], k[10], 0.0)
 		else:
 			_carve_a[i] = Vector4.ZERO
 			_carve_b[i] = Vector4.ZERO
+			_carve_c[i] = Vector4.ZERO
 	_sp(&"carve_a", _carve_a)
 	_sp(&"carve_b", _carve_b)
+	_sp(&"carve_c", _carve_c)
 	_sp(&"carve_count", _carves.size())
 	if _proxy_mat:
 		_proxy_mat.set_shader_parameter(&"carve_a", _carve_a)
@@ -1529,7 +1573,7 @@ static func _apply_carve(state: PackedFloat32Array, positions: PackedVector3Arra
 		var r_eff := r * (1.0 - ragged * _hash01(key))
 		if d <= r_eff:
 			var dir := (p - center) / d if d > 1e-6 else Vector3.UP
-			var vel := (dir + _rand_dir(key ^ 0x68E31DA4) * 0.6) * force * (0.4 + _hash01(key + 7))
+			var vel := (dir + _rand_dir(key ^ 0x68E31DA4) * 0.6 + Vector3(c[8], c[9], c[10])) * force * (0.4 + _hash01(key + 7))
 			state[k] = t0 + d / r * 0.08
 			state[k + 1] = vel.x
 			state[k + 2] = vel.y

@@ -35,7 +35,7 @@ Open the folder in **Godot 4.4 or newer** and press Play (`demo/main.tscn`).
 | Input | Action |
 |---|---|
 | WASD / Shift / Space / mouse | move, sprint, jump, look (first person) |
-| LMB (hold) | shoot: knocks points off whatever you aim at |
+| LMB (hold) | shoot bullets (little clouds of atoms) that knock atoms off whatever you aim at. The grey **stone block** is a different element: its chips fall, bounce and stay on the ground |
 | RMB (hold) | paint points with a cycling colour |
 | E | morph (the shape-shifter cycles cube → sphere → torus → "POINTS"; anything else turns into a sphere and back) |
 | Q | dissolve / reassemble |
@@ -127,6 +127,16 @@ point_cloud.gdshader           draws up to `max_amplification` beads per point; 
   Morph targets with fewer points are spread out to cover evenly.
   `tests/custom_model_test.tscn` exercises a hand-built open mesh and a
   multi-mesh figure.
+* **Elements.** `PointCloud.element` (a `PointElement` resource) says what a
+  cloud's atoms are made of, i.e. how they behave once knocked loose:
+  gravity, bounce, friction, air drag, whether they land and stay, glow,
+  hardness. Presets: `ember()` (the default: glowing sparks that fade),
+  `stone()`, `rubber()`, `dust()`. The physics is a closed-form path per
+  atom in the vertex shader (launch, fall, bounces off the ground at
+  `floor_y`, slide to rest), so loose atoms cost the same as resting ones
+  and nothing is simulated on the CPU. Atoms collide with the ground, not
+  with each other or other objects. `carve(..., kick)` throws the chips in
+  a direction, e.g. back along a bullet's path.
 * **Swirls and swarms.** Atoms are carried by a smooth flow field, so
   neighbours move together: explosions twist and break into streams, and
   morphs first come apart into a drifting cloud, then swarm into the new

@@ -112,6 +112,13 @@ uniform float glow_strength = 4.0;
 
 uniform float debris_lifetime = 2.0;
 uniform vec3 debris_gravity = vec3(0.0, -3.0, 0.0);
+// Element behaviour of loose atoms (see PointElement).
+uniform bool debris_lands = false;     // collide with the ground plane
+uniform float debris_floor_y = 0.0;    // ground height, local space
+uniform float debris_bounce = 0.3;
+uniform float debris_friction = 0.4;
+uniform float debris_drag = 0.0;
+uniform float debris_glow = 1.0;
 uniform float heal : hint_range(0.0, 1.0) = 0.0;
 uniform bool has_debris = false;  // skip the state lookup until something was carved
 
@@ -121,6 +128,7 @@ const float WALL_REACH = 1.7;
 uniform int carve_count = 0;
 uniform vec4 carve_a[48];  // xyz centre (rest space), w start time
 uniform vec4 carve_b[48];  // x radius, y force, z raggedness, w seed
+uniform vec4 carve_c[48];  // xyz kick: extra direction for the debris (local)
 // How dark the inside of a hole gets (fake ambient occlusion).
 uniform float cavity_strength : hint_range(0.0, 1.0) = 0.5;
 // Directional shadow maps: dots are drawn as plain squares this much larger
@@ -285,6 +293,53 @@ void custom_effect(inout vec3 p, inout vec3 n, inout vec4 c, inout float size_sc
 	// p.xz = mat2(vec2(cos(a), sin(a)), vec2(-sin(a), cos(a))) * p.xz;
 }
 
+// Where a loose atom is `t` seconds after leaving `start` with velocity
+// `vel` (as an offset from start): free fall, a few bounces off the ground,
+// then a short slide to rest. Closed form, so no state is kept per atom.
+vec3 debris_path(vec3 start, vec3 vel, float t, uint key) {
+	float g = max(-debris_gravity.y, 1e-3);
+	// Air resistance: the launch speed dies away.
+	vec3 v = vel;
+	float tl = t; // time available to the launch velocity
+	if (debris_drag > 0.0) {
+		tl = (1.0 - exp(-debris_drag * t)) / debris_drag;
+	}
+	if (!debris_lands) {
+		return v * tl + 0.5 * debris_gravity * t * t;
+	}
+	// Resting height: on the ground, each atom at a slightly different level
+	// so a heap of them doesn't collapse into one flat sheet.
+	float rest_y = debris_floor_y + point_spacing * (0.6 + 2.5 * hash01(key * 31u + 5u));
+	float h = max(start.y - rest_y, 0.0);
+	float e = debris_bounce * (0.6 + 0.8 * hash01(key * 17u + 3u));
+	if (debris_drag > 0.0) {
+		// Light atoms: no bouncing, they sink and settle.
+		float fall = min(h, 0.5 * g * t * t / (1.0 + debris_drag * t));
+		return vec3(v.x * tl, -fall + max(v.y, 0.0) * tl * exp(-t * 1.5), v.z * tl);
+	}
+	float vy = v.y;
+	vec2 hv = v.xz;
+	vec2 hp = vec2(0.0);
+	for (int i = 0; i < 6; i++) {
+		float vimp = sqrt(vy * vy + 2.0 * g * h);
+		float th = (vy + vimp) / g; // time until it reaches the ground
+		if (t < th) {
+			return vec3(hp.x + hv.x * t, h + vy * t - 0.5 * g * t * t + rest_y - start.y, hp.y + hv.y * t);
+		}
+		hp += hv * th;
+		t -= th;
+		vy = vimp * e;
+		h = 0.0;
+		hv *= 1.0 - debris_friction;
+		if (vy < 0.25) {
+			break;
+		}
+	}
+	// Sliding to a stop.
+	hp += hv * 0.2 * (1.0 - exp(-t / 0.2));
+	return vec3(hp.x, rest_y - start.y, hp.y);
+}
+
 void vertex() {
 	// Which dot am I? Dots are drawn as instanced batches of CHUNK points.
 	int gid = INSTANCE_ID * CHUNK + VERTEX_ID;
@@ -362,7 +417,7 @@ void vertex() {
 			float r_eff = cb.x * (1.0 - cb.z * hash01(key));
 			if (d <= r_eff) {
 				vec3 dir = d > 1e-6 ? dv / d : vec3(0.0, 1.0, 0.0);
-				vec3 vel = (dir + rand_dir(key ^ 0x68E31DA4u) * 0.6) * cb.y * (0.4 + hash01(key + 7u));
+				vec3 vel = (dir + rand_dir(key ^ 0x68E31DA4u) * 0.6 + carve_c[i].xyz) * cb.y * (0.4 + hash01(key + 7u));
 				st = vec4(ca.w + d / cb.x * 0.08, vel);
 				break;
 			}
@@ -504,13 +559,13 @@ void vertex() {
 	if (st.x >= 0.0) {
 		float dt = max(cloud_time - st.x, 0.0);
 		if (cloud_time >= st.x) {
-			float life = clamp(dt / debris_lifetime, 0.0, 1.0);
+			float life = debris_lifetime > 0.0 ? clamp(dt / debris_lifetime, 0.0, 1.0) : 0.0;
 			// Dots of one point share its velocity but scatter a little.
 			vec3 vel = st.yzw + rand_dir(uid * 13u + 9u) * length(st.yzw) * 0.35 * (sub > 0 ? 1.0 : 0.0);
-			vec3 off = vel * dt + 0.5 * debris_gravity * dt * dt;
+			vec3 off = debris_path(p, vel, dt, uid);
 			p += off * (1.0 - heal);
 			size_scale *= mix(1.0 - life * life, 1.0, heal);
-			glow += (1.0 - smoothstep(0.0, 0.25, life)) * (1.0 - heal);
+			glow += (1.0 - smoothstep(0.0, 0.25, debris_lifetime > 0.0 ? life : dt)) * (1.0 - heal) * debris_glow;
 			fly = max(fly, 1.0 - heal);
 		}
 	}
@@ -588,7 +643,9 @@ void vertex() {
 	float world_size = disc_size * obj_scale * size_scale;
 	bool shadow_pass = PROJECTION_MATRIX[3][3] > 0.5; // orthographic = directional shadow map
 	if (shadow_pass) {
-		world_size *= shadow_disc_scale;
+		// Loose atoms are specks: they cast no shadow (enlarged shadow dots
+		// would turn a cloud of them into dark blotches on the ground).
+		world_size *= shadow_disc_scale * (1.0 - max(smoothstep(0.0, point_spacing * lod_scale * 6.0, disp), fly));
 		// Push away from the light (view -z) by about the dot's radius.
 		VERTEX += transpose(mat3(MODELVIEW_MATRIX)) * vec3(0.0, 0.0, -world_size * shadow_push)
 				/ max(obj_scale * obj_scale, 1e-8);
@@ -677,7 +734,10 @@ void fragment() {
 		float detail = smoothstep(4.0, 11.0, v_px);
 		// Atoms in flight are lit as if facing the viewer: their own surface
 		// normals point everywhere once they scatter, which would flicker.
-		vec3 base_n = normalize(mix(vn, vec3(0.0, 0.0, 1.0), v_fly));
+		// (Tilted towards the sky, where the light usually is, so loose grains
+		// are about as bright as the surface they came from.)
+		vec3 free_n = normalize(vec3(0.0, 0.0, 1.0) + mat3(VIEW_MATRIX) * vec3(0.0, 1.6, 0.0));
+		vec3 base_n = normalize(mix(vn, free_n, v_fly));
 		NORMAL = normalize(mix(base_n, bn, mix(bead_bulge, 1.0, v_fly) * detail));
 		bead_shade = mix(1.0, mix(1.0 - bead_edge_shade, 1.0, bn.z), detail * max(v_fly, bead_bulge));
 		// The surface point under this pixel: intersect the pixel's view ray

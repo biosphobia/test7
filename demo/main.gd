@@ -20,6 +20,9 @@ var _info: Label
 var _status: Label
 var _fire_cd := 0.0
 var _paint_hue := 0.0
+const BULLET_SPEED := 90.0
+const BULLET_POOL := 8
+var _bullets: Array[Dictionary] = []   # pooled bullets, each a small cloud of atoms
 
 
 func _ready() -> void:
@@ -213,6 +216,21 @@ func _build_props() -> void:
 		var p := _make_prop("Monolith %d" % (i + 1), d, Vector3(6 + i * 2.5, 2.0, -4 - i * 2.0), mb)
 		p.rotation.y = 0.4 * i
 
+	# A block of a different element: stone. Its atoms are heavy grains that
+	# are thrown out by a hit, fall, bounce and stay where they land.
+	var rock_rng := RandomNumberGenerator.new()
+	rock_rng.seed = 11
+	var rock := PointSampler.box(Vector3(2, 2, 2), 400000, {"fill": PointSampler.Fill.SOLID,
+		"color_fn": func(_p, _n, _c, inside: bool) -> Color:
+			var g := rock_rng.randf_range(0.42, 0.62) * (0.8 if inside else 1.0)
+			return Color(g * 0.92, g * 0.97, g * 1.08)})
+	var rb := BoxShape3D.new()
+	rb.size = Vector3(2, 2, 2)
+	var rock_body := _make_prop("Stone block", rock, Vector3(4.5, 1.0, 2.0), rb)
+	var rock_cloud := rock_body.get_meta("cloud") as PointCloud
+	rock_cloud.element = PointElement.stone()
+	rock_cloud.roughness = 0.95
+
 	# A floating jelly orb that wobbles all the time.
 	var orb := PointSampler.sphere(1.0, 250000, {"color_fn": func(p: Vector3, _n, _c, _in) -> Color:
 		return Color(0.75, 0.35, 1.0).lerp(Color(0.2, 0.9, 1.0), clampf(p.y * 0.5 + 0.5, 0.0, 1.0))})
@@ -274,6 +292,7 @@ func _crate_image() -> Image:
 
 func _process(delta: float) -> void:
 	_update_target()
+	_update_bullets(delta)
 	_fire_cd -= delta
 	if Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
 		if Input.is_action_pressed("shoot") and _fire_cd <= 0.0:
@@ -346,13 +365,86 @@ func _update_target() -> void:
 		target_hit = hit["position"]
 
 
+## Fires a bullet (itself a little cloud of atoms) at whatever is under the
+## crosshair. The hit lands when the bullet arrives.
 func shoot() -> void:
 	if target == null:
 		return
-	target.carve(target_hit, 0.32, 2.5)
-	target.impact(target_hit, 0.1, 5.0, 0.3, 3.0)
-	if target_body.has_meta("on_hit"):
-		target_body.get_meta("on_hit").call(target_hit)
+	var cam := player.camera
+	var from := cam.global_position + cam.global_basis * Vector3(0.16, -0.12, -0.6)
+	var b := _free_bullet()
+	if b.is_empty():
+		_apply_hit(target, target_body, target_hit, (target_hit - from).normalized())
+		return
+	var cloud: PointCloud = b["cloud"]
+	cloud.explode = 0.0
+	cloud.global_position = from
+	cloud.visible = true
+	b["busy"] = true
+	b["from"] = from
+	b["to"] = target_hit
+	b["t"] = 0.0
+	b["dur"] = maxf(from.distance_to(target_hit) / BULLET_SPEED, 0.001)
+	b["target"] = target
+	b["body"] = target_body
+
+
+func _free_bullet() -> Dictionary:
+	for b in _bullets:
+		if not b["busy"]:
+			return b
+	if _bullets.size() >= BULLET_POOL:
+		return {}
+	var cloud := PointCloud.new()
+	cloud.data = _bullet_data()
+	cloud.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	cloud.emission_strength = 0.8
+	cloud.visible = false
+	add_child(cloud)
+	var b := {"cloud": cloud, "busy": false}
+	_bullets.append(b)
+	return b
+
+
+func _bullet_data() -> PointCloudData:
+	if not has_meta("bullet_data"):
+		set_meta("bullet_data", PointSampler.sphere(0.05, 1500, {"color": Color(1.0, 0.82, 0.35)}))
+	return get_meta("bullet_data")
+
+
+func _update_bullets(delta: float) -> void:
+	for b in _bullets:
+		if not b["busy"] or not b.has("dur"):
+			continue
+		var cloud: PointCloud = b["cloud"]
+		b["t"] += delta
+		var k: float = b["t"] / b["dur"]
+		if k < 1.0:
+			cloud.global_position = (b["from"] as Vector3).lerp(b["to"], k)
+			continue
+		if b["dur"] > 0.0:
+			# Arrived: hit the target, and the bullet itself bursts into its atoms.
+			cloud.global_position = b["to"]
+			var dir := ((b["to"] as Vector3) - (b["from"] as Vector3)).normalized()
+			if is_instance_valid(b["target"]):
+				_apply_hit(b["target"], b["body"], b["to"], dir)
+			b["dur"] = -1.0
+			var tw := cloud.create_tween()
+			tw.tween_property(cloud, "explode", 0.45, 0.22).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+			tw.tween_callback(func():
+				cloud.visible = false
+				b["busy"] = false)
+
+
+func _apply_hit(cloud: PointCloud, body: CollisionObject3D, hit: Vector3, dir: Vector3) -> void:
+	# For elements with real physics, the blast is centred a little inside the
+	# surface, so the chips are thrown back out towards the shooter.
+	var physical := cloud.element != null and cloud.element.lands
+	cloud.carve(hit + dir * 0.12 if physical else hit, 0.32, 2.5, 0.35, -dir * 1.1 if physical else Vector3.ZERO)
+	if not physical:
+		cloud.impact(hit, 0.1, 5.0, 0.3, 3.0)  # stone doesn't ripple
+	if is_instance_valid(body) and body.has_meta("on_hit"):
+		body.get_meta("on_hit").call(hit)
 
 
 ## The "turn into a sphere" target of a cloud: a Callable, so it is generated
