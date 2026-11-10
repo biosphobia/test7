@@ -38,10 +38,11 @@ and glows as the mouse comes near. Click it and it cracks five times: with
 each crack two beams of light break out, the ball jolts and the camera
 lurches a quarter of the way closer. The beams go out, the ball holds still
 for a moment, and then it explodes with a hard screen shake: every atom is
-hurled far out in all directions and shrinks away into the distance. The
-world is then built by a fine rain: atoms drop into place from high above
-the view, mere specks until they land: first the floor, from the far end
-towards the viewer, then everything on it, then the player. Only when it all stands do the atoms take on their colours. The
+hurled far out in all directions, then sweeps on up out of the top of the
+view as a rising mist. The world is then built from above: first the floor,
+one grid square at a time dropping in as a slab, from the far end towards
+the viewer; then everything on it, formed by a fine rain of specks; then the
+player. The whole intro is seen from straight behind the player's eyes. Only when it all stands do the atoms take on their colours. The
 camera then drops into the player's head and hands over control.
 
 | Input | Action |
@@ -151,9 +152,10 @@ point_cloud.gdshader           draws up to `max_amplification` beads per point; 
   a direction, e.g. back along a bullet's path.
 * **Singularity.** `PointCloud.gather` (1 → 0) packs a cloud's atoms into a
   small swarming ball at `gather_center`, then releases them in three acts:
-  an explosion that hurls every atom far out (`gather_burst`) until it
-  shrinks from sight; a build in which each atom drops into its place from
-  above the view, a speck until it lands; and finally colour. `gather_window` gives
+  an explosion that hurls every atom far out (`gather_burst`), after which
+  it rises to a staging point above the view; a build in which each atom
+  drops into its place from there, a speck until it lands (`gather_tile`
+  makes a floor arrive square by square as slabs); and finally colour. `gather_window` gives
   a cloud its share of the build (floor first, player last); within it the
   build starts farthest from `gather_eye` (`gather_reach`).
   `gather_radius`, `gather_agitate` and `gather_heat` shape the ball. The

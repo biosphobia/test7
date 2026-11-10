@@ -32,6 +32,7 @@ var _intro_crack := 0.0
 var _intro_jolt := 0.0
 var _intro_shake := 0.0
 var _intro_hush := 0.0
+var _intro_enter_from := Vector3.ZERO
 var _intro_flash := 0.0
 var _intro_rays: ColorRect
 var _hud_layer: CanvasLayer
@@ -86,10 +87,11 @@ func start_intro() -> void:
 	_intro_cam.fov = 60.0
 	_intro_cam.far = 300.0
 	add_child(_intro_cam)
-	# A three-quarter view from behind the player's shoulder, low enough for
-	# the floor grid to run off into the distance.
-	_intro_cam.global_position = player.global_position + Vector3(6.5, 2.6, 8.0)
-	_intro_cam.look_at(Vector3(-1.0, 1.3, 0.0))
+	# Straight behind the player's eyes, looking the same way: the whole
+	# intro is seen along the player's own line of sight, and entering the
+	# player at the end is a single move along that one axis.
+	_intro_cam.global_transform = player.camera.global_transform
+	_intro_cam.global_position += player.camera.global_basis.z * 6.5
 	_intro_cam.current = true
 	_intro_centre = _intro_cam.global_position - _intro_cam.global_basis.z * 7.0
 	for c in get_tree().get_nodes_in_group(&"point_clouds"):
@@ -100,6 +102,7 @@ func start_intro() -> void:
 		# The floor is laid first, then everything on it, then the player.
 		if cloud in _ground_tiles:
 			cloud.gather_window = Vector2(0.0, 0.42)
+			cloud.gather_tile = 2.0  # the floor arrives one grid square at a time
 		elif player.is_ancestor_of(cloud):
 			cloud.gather_window = Vector2(0.88, 1.0)
 		else:
@@ -141,13 +144,13 @@ func intro_bang() -> void:
 	tw.tween_property(self, "_intro_flash", 0.0, 0.8).from(1.0).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
 	tw.parallel().tween_property(self, "_intro_crack", 0.0, 0.5)
 	tw.tween_interval(8.0)
-	tw.tween_callback(func(): intro = Intro.ENTER)
-	# Into the player's eyes.
+	tw.tween_callback(func():
+		intro = Intro.ENTER
+		_intro_enter_from = _intro_cam.global_position)
+	# Into the player's eyes: one straight move along the line of sight.
 	tw.tween_method(func(k: float):
-		var a := _intro_cam.global_transform
-		var b := player.camera.global_transform
-		_intro_cam.global_transform = a.interpolate_with(b, k)
-		_intro_cam.fov = lerpf(_intro_cam.fov, player.camera.fov, k), 0.0, 1.0, 1.3).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN)
+		_intro_cam.global_position = _intro_enter_from.lerp(player.camera.global_position, k)
+		_intro_cam.fov = lerpf(60.0, player.camera.fov, k), 0.0, 1.0, 1.3).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
 	tw.tween_callback(_end_intro)
 
 
