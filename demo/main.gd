@@ -105,7 +105,7 @@ func start_intro() -> void:
 			cloud.gather_window = Vector2(0.0, 0.25)
 			cloud.gather_mode = PointCloud.GatherMode.DIRECT  # the cloud settles into the floor
 		elif player.is_ancestor_of(cloud):
-			cloud.gather_window = Vector2(0.73, 0.76)
+			cloud.gather_window = Vector2(0.62, 0.65)
 			cloud.gather_mode = PointCloud.GatherMode.RAIN    # the player comes from above
 		else:
 			cloud.gather_window = Vector2(0.3, 0.55)
@@ -147,7 +147,7 @@ func intro_bang() -> void:
 	tw.tween_property(self, "_intro_flash", 0.0, 0.8).from(1.0).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
 	tw.parallel().tween_property(self, "_intro_crack", 0.0, 0.5)
 	# The camera starts for the player's eyes while the body is still forming.
-	tw.tween_interval(5.5)
+	tw.tween_interval(6.0)
 	tw.tween_callback(func():
 		intro = Intro.ENTER
 		_intro_enter_from = _intro_cam.global_position)

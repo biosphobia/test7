@@ -44,8 +44,9 @@ of the haze low over the ground and settle into place, the surface
 thickening from the far end towards the viewer. Everything on it then rises up through the floor, each object in one
 piece. The player is rained in from above last, and the camera is already
 moving into the player's eyes while the body forms, cutting cleanly through
-it so that the hand-over to the player's own view is seamless. The atoms
-then take on their colours. The whole intro is seen from straight behind the
+it so that the hand-over to the player's own view is seamless. Each atom
+takes on its colour shortly after it lands, so colour spreads through the
+world in the order it was built, and is complete before control begins. The whole intro is seen from straight behind the
 player's eyes.
 
 | Input | Action |

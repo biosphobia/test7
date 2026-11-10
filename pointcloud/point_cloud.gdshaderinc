@@ -655,7 +655,7 @@ void vertex() {
 
 		// Nothing fades or shrinks: the blast simply carries the atoms out of
 		// sight, into the haze, and they stay small specks while they travel.
-		float speck = 2.0;
+		float speck = 3.0;
 
 		// Act 2, the world is built. Each cloud has its own window of the
 		// build (the ground first, say); within it the build starts farthest
@@ -717,9 +717,11 @@ void vertex() {
 			}
 		}
 		disp = max(disp, distance(p, place));
-		// Everything is white until the whole world stands; then each atom
-		// takes on its own colour (and the surface texture) at its own pace.
-		float own = clamp((x - 0.74 - 0.04 * hash01(gk + 51u)) / (0.03 + 0.05 * hash01(gk + 53u)), 0.0, 1.0);
+		// An atom is white until it is in place. Soon after, it takes on its
+		// own colour (and the surface texture): colour spreads through the
+		// world in the order it was built, with a little randomness.
+		float landed = gather_mode == 1 ? start + 0.115 : (gather_mode == 2 ? cloud_start + 0.14 : start + 0.08);
+		float own = clamp((x - landed - 0.015 - 0.035 * hash01(gk + 51u)) / (0.03 + 0.04 * hash01(gk + 53u)), 0.0, 1.0);
 		own = own * own * (3.0 - 2.0 * own);
 		c = vec4(mix(vec3(1.0), c.rgb, own), c.a * own);
 		// The ball glows a little (warm), more when it is disturbed.
