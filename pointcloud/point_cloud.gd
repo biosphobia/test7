@@ -30,6 +30,8 @@ const LOD_MIN_POINTS := 1500
 ## Shadows are cast by a hidden low-detail copy using this fraction of the
 ## points drawn on screen (shadow maps are blurry anyway, and every shadow
 ## cascade redraws all casters).
+## Extra atoms per point while an effect has points in flight.
+const ATOM_BOOST := 4.0
 const SHADOW_DETAIL := 0.25
 ## Carves applied on the GPU before being folded into the debris texture.
 const MAX_CARVES := 48
@@ -1065,6 +1067,12 @@ func _update_lod() -> void:
 				# Quantise to steps of 1/sqrt(2) so counts don't change every frame.
 				f = pow(2.0, floorf(log(maxf(f, 1e-9)) / log(2.0) * 2.0) / 2.0)
 	var target := lod_spacing_px * lod_spacing_scale
+	# While points fly (explode, dissolve, morph) every point splits into more,
+	# smaller atoms, so the cloud reads as fine dust instead of a few blobs.
+	# At rest this changes nothing visible: more, smaller beads cover the same.
+	if dissolve > 0.0 or explode != 0.0 or morph > 0.0:
+		f *= ATOM_BOOST
+		target /= sqrt(ATOM_BOOST)
 	if target != _target_px:
 		_target_px = target
 		_sp(&"target_px", target)

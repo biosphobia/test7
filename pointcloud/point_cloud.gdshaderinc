@@ -79,6 +79,16 @@ uniform float splat_scale = 1.6;
 uniform float morph : hint_range(0.0, 1.0) = 0.0;
 uniform float morph_stagger : hint_range(0.0, 0.95) = 0.5;
 uniform float morph_arc = 0.3;
+// How far morphing atoms stray from the straight path while they swarm.
+uniform float morph_swarm = 0.7;
+// Explosions: twist around the vertical axis and turbulent streams.
+uniform float explode_swirl = 0.9;
+uniform float explode_turbulence = 0.55;
+// Atoms in flight are never drawn bigger than this many pixels.
+uniform float atom_max_px = 2.6;
+// Share of an atom's colour that glows by itself in flight, so a cloud of
+// atoms keeps its colour instead of flickering light and dark.
+uniform float atom_glow = 0.55;
 
 // ---------------------------------------------------------------- effects
 uniform float vibrate_amplitude = 0.0;
@@ -123,7 +133,7 @@ uniform float shadow_push = 0.75;
 // Dots in flight (debris, dissolve, explode, mid-morph) are drawn as small
 // round beads with their own sphere-like shading instead of flat surface
 // discs. Size relative to a surface dot.
-uniform float bead_size = 0.55;
+uniform float bead_size = 0.4;
 // Draw every dot as a bead (default). Resting beads are sized to overlap and
 // close the surface; in flight they shrink to bead_size. Size and shading
 // follow the same continuous "in flight" amount, so morphs, debris and
@@ -175,6 +185,15 @@ varying highp vec3 v_texpos;   // rest position, for the surface texture
 varying highp vec3 v_lnormal;  // rest normal, for triplanar blending
 
 // ---------------------------------------------------------------- helpers
+// Smooth, divergence-free flow field (an ABC flow): atoms that are close
+// together are carried the same way, so they move in streams and swarms
+// instead of each on its own straight line.
+vec3 flow(vec3 q, float t) {
+	return vec3(sin(q.y * 1.7 + t) + cos(q.z * 1.3 - t * 0.7),
+			sin(q.z * 1.5 + t * 0.8) + cos(q.x * 1.9 + t * 0.6),
+			sin(q.x * 1.6 - t * 0.9) + cos(q.y * 1.4 + t * 0.5)) * 0.5;
+}
+
 uint pcg_hash(uint v) {
 	uint state = v * 747796405u + 2891336453u;
 	uint word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
@@ -380,7 +399,10 @@ void vertex() {
 
 	// --- morph into the target cloud, each point on its own schedule and arc
 	if (morph > 0.0) {
-		float t = clamp((morph - seed * morph_stagger) / (1.0 - morph_stagger), 0.0, 1.0);
+		// Departure order: neighbouring atoms leave together, in clumps.
+		float grp = 0.5 + 0.5 * flow(rest * 1.1, 0.0).x;
+		float sched = mix(seed, grp, 0.65);
+		float t = clamp((morph - sched * morph_stagger) / (1.0 - morph_stagger), 0.0, 1.0);
 		t = t * t * (3.0 - 2.0 * t);
 		morph_t = t;
 		vec3 tn = texelFetch(target_nrm_tex, tc, 0).xyz;
@@ -389,8 +411,17 @@ void vertex() {
 		}
 		vec3 tp = texelFetch(target_pos_tex, tc, 0).xyz + sub_offset(tn, sub, spin, uint(id));
 		vec4 tcol = texelFetch(target_col_tex, tc, 0);
-		p = mix(p, tp, t) + rand_dir(uid * 3u + 17u) * sin(t * PI) * morph_arc;
-		fly = max(fly, sin(t * PI));
+		vec3 from = p;
+		float w = sin(t * PI);
+		p = mix(from, tp, t);
+		// Swarm: on the way, atoms ride a slowly changing flow field (big
+		// streams plus smaller eddies) and scatter a little.
+		vec3 sw = flow(p * 0.8 + grp * 3.0, cloud_time * 1.3 + grp * 6.0)
+				+ 0.45 * flow(p * 2.3 + seed, cloud_time * 2.1);
+		p += (sw * morph_swarm + rand_dir(uid * 3u + 17u) * morph_arc * 0.4) * w;
+		// Small while travelling; full size only within a spacing of either end.
+		float mgap = point_spacing * lod_scale / sqrt(d_need);
+		fly = max(fly, smoothstep(0.0, 1.0, min(distance(p, from), distance(p, tp)) / max(mgap, 1e-6)));
 		c = mix(c, tcol, t);
 		n = normalize(mix(n, tn, t) + vec3(1e-6));
 		if (!beads) {
@@ -416,7 +447,15 @@ void vertex() {
 	if (explode != 0.0) {
 		vec3 d = normalize(p - explode_center + rand_dir(uid * 7u + 3u) * 0.35 + vec3(1e-5));
 		float moved = abs(explode) * (0.4 + seed * 1.2);
-		p += d * moved * sign(explode);
+		vec3 q = p + d * moved * sign(explode);
+		// Twist around the vertical axis, more the further out an atom is...
+		float ang = explode * explode_swirl * (0.5 + seed);
+		vec3 r = q - explode_center;
+		q = explode_center + vec3(r.x * cos(ang) - r.z * sin(ang), r.y, r.x * sin(ang) + r.z * cos(ang));
+		// ...and get carried by turbulent streams that keep drifting.
+		float tb = explode_turbulence * min(moved, 1.5);
+		q += (flow(q * 1.3, cloud_time * 0.9) + 0.4 * flow(q * 3.4 + seed, cloud_time * 1.7)) * tb;
+		p = q;
 		// A bead keeps its small flying size until it's back within about one
 		// bead spacing of its place; only then does it grow to close the
 		// surface. (Growing earlier shows as big blobs while the cloud settles.)
@@ -432,10 +471,12 @@ void vertex() {
 		float threshold = mix(seed, h01 * 0.85 + seed * 0.15, dissolve_directional);
 		float a = clamp((dissolve * (1.0 + dissolve_span) - threshold) / dissolve_span, 0.0, 1.0);
 		if (a > 0.0) {
-			p += (rand_dir(uid * 11u + 5u) + dissolve_drift) * dissolve_spread * a * a;
+			vec3 dv = (rand_dir(uid * 11u + 5u) + dissolve_drift) * dissolve_spread * a * a;
+			p += dv + flow((p + dv) * 1.5, cloud_time * 0.8) * dissolve_spread * 0.35 * a * a;
 			size_scale *= 1.0 - smoothstep(0.55, 1.0, a);
 			glow += 1.0 - smoothstep(0.0, 0.35, a);
-			fly = max(fly, smoothstep(0.0, 0.2, a));
+			float dgap = point_spacing * lod_scale / sqrt(d_need);
+			fly = max(fly, smoothstep(0.0, 1.0, length(dv) / max(dgap, 1e-6)));
 		}
 	}
 
@@ -536,7 +577,7 @@ void vertex() {
 		px /= max(-vp.z, 1e-3); // perspective
 	}
 	v_alive = size_scale > 0.02 ? 1.0 : 0.0;
-	POINT_SIZE = v_alive > 0.5 ? clamp(px, min_pixel_size, max_pixel_size) : 1.0;
+	POINT_SIZE = v_alive > 0.5 ? clamp(px, min_pixel_size, mix(max_pixel_size, atom_max_px, fly)) : 1.0;
 	v_px = POINT_SIZE;
 	// Sizes in view space, corrected for the pixel clamp.
 	float clamp_ratio = POINT_SIZE / max(px, 1e-4);
@@ -590,7 +631,10 @@ void fragment() {
 		// would just beat against the pixel grid (moire). Fade the bead
 		// shading in with on-screen size.
 		float detail = smoothstep(4.0, 11.0, v_px);
-		NORMAL = normalize(mix(v_vnormal, bn, mix(bead_bulge, 1.0, v_fly) * detail));
+		// Atoms in flight are lit as if facing the viewer: their own surface
+		// normals point everywhere once they scatter, which would flicker.
+		vec3 base_n = normalize(mix(v_vnormal, vec3(0.0, 0.0, 1.0), v_fly));
+		NORMAL = normalize(mix(base_n, bn, mix(bead_bulge, 1.0, v_fly) * detail));
 		bead_shade = mix(1.0, mix(1.0 - bead_edge_shade, 1.0, bn.z), detail * max(v_fly, bead_bulge));
 		// The surface point under this pixel: intersect the pixel's view ray
 		// with the bead's surface plane. Texture, box trimming, lighting and
@@ -705,8 +749,9 @@ void fragment() {
 		ALBEDO = vec3(0.0);
 		EMISSION = col;
 	} else {
-		ALBEDO = col;
-		EMISSION = col * emission_strength;
+		float self_lit = atom_glow * v_fly;
+		ALBEDO = col * (1.0 - self_lit);
+		EMISSION = col * (emission_strength + self_lit);
 	}
 	EMISSION += dissolve_edge_color.rgb * v_glow * glow_strength;
 	ROUGHNESS = roughness;

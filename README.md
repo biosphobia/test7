@@ -113,9 +113,15 @@ point_cloud.gdshader           draws up to `max_amplification` beads per point; 
   few frames and then starts. Targets stay cached on the GPU, and finishing a
   morph swaps textures instead of re-uploading. `prepare_morph_target()`
   warms the cache ahead of time.
-* **Beads in flight look like little spheres.** Debris, dissolving,
-  exploding and mid-morph beads blend from surface shading to sphere shading
-  by how far they've left the surface, so morphs and debris never pop.
+* **In flight, points are atoms.** While a cloud explodes, dissolves or
+  morphs, every point splits into four times as many atoms, each at most a
+  few pixels wide and lit facing the viewer with part of its colour glowing,
+  so the cloud reads as fine coloured dust. An atom only grows back to
+  surface size once it is within a bead spacing of its place.
+* **Swirls and swarms.** Atoms are carried by a smooth flow field, so
+  neighbours move together: explosions twist and break into streams, and
+  morphs leave in clumps and swarm to the new shape (`morph_swarm`,
+  `explode_swirl`, `explode_turbulence` shader parameters).
 * **Animation.** Skinned meshes keep their bone indices and weights per point,
   and the bone matrices are uploaded each frame from the `Skeleton3D`. So an
   imported character with an `AnimationPlayer` animates as points without any
