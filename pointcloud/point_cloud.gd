@@ -275,7 +275,7 @@ static var _clock_frame := -1
 enum GatherMode {
 	RAIN,    ## dropped in from high above (out of the viewer's sight)
 	DIRECT,  ## glide straight out of the scattered cloud and settle: floors
-	GROW,    ## well up from the ground below: the model rises from floor_y
+	GROW,    ## the whole model rises through the floor (floor_y) in one piece
 }
 @export var gather_mode := GatherMode.RAIN:
 	set(v):

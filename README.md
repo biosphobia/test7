@@ -38,14 +38,15 @@ and glows as the mouse comes near. Click it and it cracks five times: with
 each crack two beams of light break out, the ball jolts and the camera
 lurches a quarter of the way closer. The beams go out, the ball holds still
 for a moment, and then it explodes with a hard screen shake: every atom is
-hurled far out in all directions and the cloud thins to a few faint specks
-in a gathering haze. The floor forms first: its atoms glide out of the cloud
+hurled out sideways in a ring, and the cloud thins to a few faint specks in
+a gathering haze. The floor forms first: its atoms glide out of the cloud
 and settle into place, the surface thickening from the far end towards the
-viewer. Everything on it then grows out of the floor, layer by layer. The
-player is rained in from above last, and the camera is already moving into
-the player's eyes while the body forms. Only when it all stands do the atoms
-take on their colours; then control is handed over. The whole intro is seen
-from straight behind the player's eyes.
+viewer. Everything on it then rises up through the floor, each object in one
+piece. The player is rained in from above last, and the camera is already
+moving into the player's eyes while the body forms, cutting cleanly through
+it so that the hand-over to the player's own view is seamless. The atoms
+then take on their colours. The whole intro is seen from straight behind the
+player's eyes.
 
 | Input | Action |
 |---|---|
@@ -158,8 +159,8 @@ point_cloud.gdshader           draws up to `max_amplification` beads per point; 
   thinning to faint specks; a build; and finally colour. `gather_mode`
   picks how a cloud is built: `RAIN` (atoms drop in from high above),
   `DIRECT` (they glide straight out of the cloud and settle: floors) or
-  `GROW` (they well up from the ground at `floor_y`, so the model rises
-  layer by layer). `gather_window` gives a cloud its share of the build;
+  `GROW` (the whole model rises through the ground at `floor_y` in one
+  piece). `gather_window` gives a cloud its share of the build;
   within it the build starts farthest from `gather_eye` (`gather_reach`).
   `gather_radius`, `gather_agitate` and `gather_heat` shape the ball. The
   demo intro drives it on every cloud at once.

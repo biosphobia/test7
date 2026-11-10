@@ -82,7 +82,7 @@ func _ready() -> void:
 func start_intro() -> void:
 	intro = Intro.WAIT
 	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
-	player.set_physics_process(false)
+	player.frozen = true  # physics keeps running: the body settles on the ground now, not later
 	_hud_layer.visible = false
 	_env.fog_density = 0.0  # clear air: the blast is seen all the way out
 	_intro_cam = Camera3D.new()
@@ -106,10 +106,10 @@ func start_intro() -> void:
 			cloud.gather_window = Vector2(0.0, 0.25)
 			cloud.gather_mode = PointCloud.GatherMode.DIRECT  # the cloud settles into the floor
 		elif player.is_ancestor_of(cloud):
-			cloud.gather_window = Vector2(0.97, 1.0)
+			cloud.gather_window = Vector2(0.73, 0.76)
 			cloud.gather_mode = PointCloud.GatherMode.RAIN    # the player comes from above
 		else:
-			cloud.gather_window = Vector2(0.5, 0.9)
+			cloud.gather_window = Vector2(0.3, 0.55)
 			cloud.gather_mode = PointCloud.GatherMode.GROW    # objects rise out of the floor
 		cloud.gather = 1.0
 	# Beams of light that break out of the ball when it's clicked.
@@ -148,13 +148,19 @@ func intro_bang() -> void:
 	tw.tween_property(self, "_intro_flash", 0.0, 0.8).from(1.0).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
 	tw.parallel().tween_property(self, "_intro_crack", 0.0, 0.5)
 	# The camera starts for the player's eyes while the body is still forming.
-	tw.tween_interval(7.3)
+	tw.tween_interval(5.5)
 	tw.tween_callback(func():
 		intro = Intro.ENTER
 		_intro_enter_from = _intro_cam.global_position)
 	# Into the player's eyes: one straight move along the line of sight.
 	tw.tween_method(func(k: float):
-		_intro_cam.global_position = _intro_enter_from.lerp(player.camera.global_position, k)
+		var eye := player.camera.global_position
+		_intro_cam.global_position = _intro_enter_from.lerp(eye, k)
+		# Coming up behind the player, the near plane moves ahead of the
+		# camera and through the body, so by the time the camera is at the
+		# eyes it sees exactly what the player's own camera sees: no jump.
+		var d := _intro_cam.global_position.distance_to(eye)
+		_intro_cam.near = lerpf(0.05, d + 0.45, smoothstep(2.6, 1.2, d))
 		_intro_cam.fov = lerpf(60.0, player.camera.fov, k), 0.0, 1.0, 1.9).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
 	tw.tween_callback(_end_intro)
 
@@ -194,7 +200,7 @@ func _end_intro() -> void:
 	_intro_cam = null
 	_intro_rays.get_parent().queue_free()
 	_intro_rays = null
-	player.set_physics_process(true)
+	player.frozen = false
 	_hud_layer.visible = true
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 
@@ -245,11 +251,13 @@ func _intro_click_hits(pos: Vector2) -> bool:
 # ================================================================ world
 
 func _setup_environment() -> void:
-	var sky_mat := ProceduralSkyMaterial.new()
-	sky_mat.sky_top_color = Color(0.05, 0.07, 0.14)
-	sky_mat.sky_horizon_color = Color(0.32, 0.26, 0.36)
-	sky_mat.ground_bottom_color = Color(0.32, 0.26, 0.36)  # same haze below the horizon
-	sky_mat.ground_horizon_color = Color(0.32, 0.26, 0.36)
+	# A smooth vertical gradient with no horizon line.
+	var top := Color(0.05, 0.07, 0.14)
+	var low := Color(0.32, 0.26, 0.36)
+	var sky_mat := ShaderMaterial.new()
+	sky_mat.shader = preload("res://demo/sky_gradient.gdshader")
+	sky_mat.set_shader_parameter(&"top_color", top)
+	sky_mat.set_shader_parameter(&"low_color", low)
 	var sky := Sky.new()
 	sky.sky_material = sky_mat
 	var env := Environment.new()
@@ -262,10 +270,13 @@ func _setup_environment() -> void:
 	# melt into the sky instead of ending in a hard line.
 	env.fog_enabled = true
 	env.fog_mode = Environment.FOG_MODE_DEPTH
-	env.fog_light_color = Color(0.32, 0.26, 0.36)
+	# Exactly the sky's colour at eye level, so the floor's edge can't be told
+	# from the sky behind it.
+	var k := smoothstep(-0.35, 0.9, 0.0)
+	env.fog_light_color = low.srgb_to_linear().lerp(top.srgb_to_linear(), k).linear_to_srgb()
 	env.fog_light_energy = 1.0
-	env.fog_depth_begin = 14.0
-	env.fog_depth_end = 42.0
+	env.fog_depth_begin = 10.0
+	env.fog_depth_end = 30.0
 	env.fog_density = 1.0
 	env.fog_sky_affect = 0.0
 	env.tonemap_mode = Environment.TONE_MAPPER_FILMIC

@@ -125,6 +125,7 @@ uniform float gather_burst = 11.0;        // how far the explosion throws atoms
 uniform vec2 gather_window = vec2(0.0, 1.0); // this cloud's share of the build (start, end)
 uniform int gather_mode = 0;              // 0 rained in from above, 1 straight from the cloud, 2 grown from the ground
 uniform float gather_floor = 0.0;         // ground height, local space (mode 2)
+uniform float gather_flat = 0.22;         // blast: 0 = a flat ring, 2 = roughly a sphere
 uniform vec3 gather_eye = vec3(0.0);      // world: the build starts farthest from here
 // Element behaviour of loose atoms (see PointElement).
 uniform bool debris_lands = false;     // collide with the ground plane
@@ -630,8 +631,12 @@ void vertex() {
 		// has taken its speed away far from the centre. No clumps, no jets.
 		float u = clamp(x / 0.17, 0.0, 1.0);
 		float s1 = 1.0 - pow(1.0 - u, 4.0);
-		vec3 dirv = rand_dir(gk + 31u);
-		float speed = 0.3 + 0.7 * sqrt(hash01(gk + 13u));
+		// The blast goes out sideways, as a ring: directions lie close to the
+		// horizontal plane, and most atoms ride near the front of the wave.
+		float ring_a = hash01(gk + 31u) * TAU;
+		float lift = (hash01(gk + 33u) + hash01(gk + 35u) - 1.0) * gather_flat;
+		vec3 dirv = normalize(vec3(cos(ring_a), lift, sin(ring_a)));
+		float speed = mix(0.45, 1.0, pow(hash01(gk + 13u), 0.4));
 		vec3 blown = dirv * gather_burst * speed * s1;
 		// (still drifting slowly outwards while it waits)
 		blown *= 1.0 + 0.25 * x;
@@ -659,14 +664,14 @@ void vertex() {
 		float eye_d = distance(wplace, gather_eye);
 		float far_first = 1.0 - clamp(eye_d / gather_reach, 0.0, 1.0);
 		float order = 0.88 * far_first + 0.12 * clamp(wplace.y / 5.0, 0.0, 1.0);
-		if (gather_mode == 2) {
-			// Grown from the ground: strictly bottom to top within the model.
-			float hn = clamp((place.y - bounds_min.y) / max(bounds_size.y, 1e-4), 0.0, 1.0);
-			order = 0.45 * far_first + 0.55 * hn;
-		}
 		order = mix(gather_window.x, gather_window.y, order);
+		// (For a model raised from the ground the whole cloud shares one
+		// moment, set by how far its middle is from the viewer.)
+		vec3 wmid = (MODEL_MATRIX * vec4(bounds_min + bounds_size * 0.5, 1.0)).xyz;
+		float cloud_start = 0.08 + 0.74 * mix(gather_window.x, gather_window.y,
+				1.0 - clamp(distance(wmid, gather_eye) / gather_reach, 0.0, 1.0));
 		float start = (gather_mode == 1 ? 0.045 : 0.08) + 0.74 * order + (gather_mode == 1 ? 0.06 : 0.012) * seed;
-		float t = clamp((x - start) / (gather_mode == 1 ? 0.115 : (gather_mode == 2 ? 0.1 : 0.08)), 0.0, 1.0);
+		float t = clamp((x - start) / (gather_mode == 1 ? 0.115 : 0.08), 0.0, 1.0);
 		if (gather_mode == 1) {
 			// Straight out of the cloud into place (floors), unhurried: each
 			// atom glides in on a smooth curve to just above its place, then
@@ -680,17 +685,20 @@ void vertex() {
 			gather_cap = mix(speck, 1.2, smoothstep(0.0, 0.25, t));
 			gather_cap = mix(gather_cap, 4096.0, smoothstep(0.9, 1.0, t));
 		} else if (gather_mode == 2) {
-			// Grown out of the ground: each atom wells up from the floor
-			// directly below its place, so the model rises layer by layer.
-			if (t > 0.0) {
-				float e = 1.0 - pow(1.0 - t, 3.0);
-				vec3 root = vec3(place.x, gather_floor, place.z);
-				p = mix(root, place, e);
-				size_scale *= smoothstep(0.0, 0.15, t);
-				gather_cap = mix(1.4, 4096.0, smoothstep(0.8, 1.0, t));
+			// Raised out of the ground: the whole model comes up through the
+			// floor as one piece, like something surfacing. Atoms are hidden
+			// while they are still below floor level.
+			float g = clamp((x - cloud_start) / 0.14, 0.0, 1.0);
+			g = g * g * (3.0 - 2.0 * g);
+			if (x > cloud_start) {
+				float sunk = (1.0 - g) * (bounds_min.y + bounds_size.y - gather_floor);
+				p = place - vec3(0.0, sunk, 0.0);
+				size_scale *= smoothstep(-point_spacing * 2.0, point_spacing * 2.0, p.y - gather_floor);
+				gather_cap = 4096.0;
+				t = g;
 			} else {
 				p = from;
-				size_scale *= keep;
+				size_scale *= keep * (1.0 - smoothstep(cloud_start - 0.1, cloud_start - 0.02, x));
 				gather_cap = speck;
 			}
 		} else {
@@ -712,7 +720,7 @@ void vertex() {
 		disp = max(disp, distance(p, place));
 		// Everything is white until the whole world stands; then each atom
 		// takes on its own colour (and the surface texture) at its own pace.
-		float own = clamp((x - 0.9 - 0.03 * hash01(gk + 51u)) / (0.03 + 0.04 * hash01(gk + 53u)), 0.0, 1.0);
+		float own = clamp((x - 0.74 - 0.04 * hash01(gk + 51u)) / (0.03 + 0.05 * hash01(gk + 53u)), 0.0, 1.0);
 		own = own * own * (3.0 - 2.0 * own);
 		c = vec4(mix(vec3(1.0), c.rgb, own), c.a * own);
 		// The ball glows a little (warm), more when it is disturbed.

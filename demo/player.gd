@@ -17,6 +17,9 @@ const EYE_HEIGHT := 1.65
 @export var mouse_sensitivity := 0.0025
 
 var camera: Camera3D
+## While true the player ignores input (cutscenes); physics still runs, so
+## the body is already settled on the ground when control is handed over.
+var frozen := false
 var visual: Node3D
 var torso: PointCloud
 var limbs: Array[Node3D] = []   # pivots: left leg, right leg, left arm, right arm
@@ -111,10 +114,12 @@ func _physics_process(delta: float) -> void:
 
 	if not is_on_floor():
 		velocity.y -= _gravity * delta
-	elif Input.is_action_just_pressed("jump"):
+	elif Input.is_action_just_pressed("jump") and not frozen:
 		velocity.y = jump_velocity
 
 	var input := Input.get_vector("move_left", "move_right", "move_forward", "move_back")
+	if frozen:
+		input = Vector2.ZERO
 	var dir := (Basis(Vector3.UP, _yaw) * Vector3(input.x, 0, input.y))
 	var sprinting := Input.is_action_pressed("sprint")
 	var speed := sprint_speed if sprinting else walk_speed
