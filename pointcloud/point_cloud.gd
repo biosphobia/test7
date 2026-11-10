@@ -30,7 +30,7 @@ const LOD_MIN_POINTS := 1500
 ## Shadows are cast by a hidden low-detail copy using this fraction of the
 ## points drawn on screen (shadow maps are blurry anyway, and every shadow
 ## cascade redraws all casters).
-const SHADOW_DETAIL := 0.25
+const SHADOW_DETAIL := 0.5
 ## Carves applied on the GPU before being folded into the debris texture.
 const MAX_CARVES := 48
 ## Fold pending carves into the debris texture once this many accumulate (or

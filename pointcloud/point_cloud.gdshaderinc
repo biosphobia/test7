@@ -154,6 +154,8 @@ uniform float cavity_strength : hint_range(0.0, 1.0) = 0.5;
 // themselves (no acne).
 uniform float shadow_disc_scale = 2.6;
 uniform float shadow_push = 0.75;
+uniform float shadow_min_px = 5.0;        // smallest dot in the shadow map, texels
+uniform float shadow_min_push = 0.07;     // extra push from the light for that size, local units
 
 // Dots in flight (debris, dissolve, explode, mid-morph) are drawn as small
 // round beads with their own sphere-like shading instead of flat surface
@@ -792,7 +794,8 @@ void vertex() {
 		// would turn a cloud of them into dark blotches on the ground).
 		world_size *= shadow_disc_scale * (1.0 - max(smoothstep(0.0, point_spacing * lod_scale * 6.0, disp), fly));
 		// Push away from the light (view -z) by about the dot's radius.
-		VERTEX += transpose(mat3(MODELVIEW_MATRIX)) * vec3(0.0, 0.0, -world_size * shadow_push)
+		// (plus a fixed distance covering the minimum dot size in the shadow map)
+		VERTEX += transpose(mat3(MODELVIEW_MATRIX)) * vec3(0.0, 0.0, -world_size * shadow_push - shadow_min_push * obj_scale)
 				/ max(obj_scale * obj_scale, 1e-8);
 		vp = MODELVIEW_MATRIX * vec4(VERTEX, 1.0);
 	}
@@ -816,6 +819,12 @@ void vertex() {
 	float px_cap = mix(max_pixel_size, clamp(target_px * cover, 1.5, atom_max_px), shadow_pass ? 0.0 : loose);
 	px_cap = shadow_pass ? px_cap : min(px_cap, gather_cap);
 	POINT_SIZE = v_alive > 0.5 ? clamp(px, min(min_pixel_size, px_cap), px_cap) : 1.0;
+	if (shadow_pass && v_alive > 0.5) {
+		// In the shadow map every dot covers at least a few texels, so
+		// neighbouring dots merge and the shadow's outline is one smooth
+		// shape instead of a ragged fringe of single texels.
+		POINT_SIZE = max(POINT_SIZE, shadow_min_px);
+	}
 	v_px = POINT_SIZE;
 	// Sizes in view space, corrected for the pixel clamp.
 	float clamp_ratio = POINT_SIZE / max(px, 1e-4);
@@ -863,7 +872,11 @@ void fragment() {
 	float grazing = 1.0;
 	float bead_shade = 1.0;
 	if (v_shadow > 0.5) {
-		// Shadow map: plain square, flat depth (see shadow_disc_scale).
+		// Shadow map: a round dot, flat depth (see shadow_disc_scale). Round
+		// dots give shadow edges a smooth outline; squares leave them jagged.
+		if (dot(pc, pc) > 1.0) {
+			discard;
+		}
 	} else if (v_bead > 0.5) {
 		// A bead: round, shaded like a little sphere. Resting beads blend that
 		// with the surface normal so the object keeps its shape and lighting;

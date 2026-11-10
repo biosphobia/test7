@@ -284,9 +284,13 @@ trades detail to hold the target. The main techniques:
   close (`max_amplification = 1`): you rarely look at it from a few
   centimetres. (`PointCloud.flat_proxy` still exists for scenes that want to
   draw an intact flat cloud as a single plane, but the demo doesn't use it.)
-* **Shadow maps.** Shadow-pass dots are plain squares sized to close gaps
-  and pushed away from the light by about their radius, so shadows are solid
-  and surfaces don't shadow themselves.
+* **Shadow maps.** Shadows are cast by a hidden copy with half the dots.
+  In the shadow map they are round dots at least a few texels wide
+  (`shadow_min_px`), so neighbours merge into one smooth outline even on
+  chipped or holed surfaces, and they are pushed away from the light so
+  surfaces don't shadow themselves. Loose atoms cast no shadow. The
+  Compatibility renderer draws hard-edged shadows; Forward+ (F10) filters
+  them into a soft penumbra.
 * **Lightweight renderer by default.** The project uses Godot's Compatibility
   (OpenGL) renderer, which is much cheaper on weak GPUs; it did a demo frame
   about 3.6× faster than Forward+ in testing. Press **F10** in game to switch

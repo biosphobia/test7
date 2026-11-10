@@ -100,7 +100,7 @@ func start_intro() -> void:
 		cloud.gather_center = _intro_centre
 		cloud.gather_reach = 50.0
 		cloud.gather_burst = 90.0  # just beyond the haze
-		cloud.gather_color_at = 0.79  # the moment control is handed over
+		cloud.gather_color_at = 0.68  # while the camera is on its way into the player
 		# The floor is laid first, then everything on it, then the player.
 		if cloud in _ground_tiles:
 			cloud.gather_window = Vector2(0.0, 0.25)
@@ -309,6 +309,11 @@ func _setup_environment() -> void:
 	# Two cascades over a shorter range: every cascade redraws all casters.
 	sun.directional_shadow_mode = DirectionalLight3D.SHADOW_PARALLEL_2_SPLITS
 	sun.directional_shadow_max_distance = 35.0
+	# Soft, wide penumbra and blended cascades: shadow edges stay smooth even
+	# where the caster is ragged (chipped surfaces, holes).
+	sun.shadow_blur = 2.5
+	sun.directional_shadow_blend_splits = true
+	sun.shadow_normal_bias = 1.0
 	add_child(sun)
 
 
