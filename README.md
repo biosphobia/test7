@@ -38,10 +38,10 @@ and glows as the mouse comes near. Click it and it cracks five times: with
 each crack two beams of light break out, the ball jolts and the camera
 lurches a quarter of the way closer. The beams go out, the ball holds still
 for a moment, and then it explodes with a hard screen shake: every atom is
-hurled out sideways in a ring, and the cloud thins to a few faint specks in
-a gathering haze. The floor forms first: its atoms glide out of the cloud
-and settle into place, the surface thickening from the far end towards the
-viewer. Everything on it then rises up through the floor, each object in one
+hurled out sideways in a ring, thinning above and below it, and is carried
+out of sight into the haze. The floor forms first: its atoms come back out
+of the haze low over the ground and settle into place, the surface
+thickening from the far end towards the viewer. Everything on it then rises up through the floor, each object in one
 piece. The player is rained in from above last, and the camera is already
 moving into the player's eyes while the body forms, cutting cleanly through
 it so that the hand-over to the player's own view is seamless. The atoms
@@ -155,10 +155,11 @@ point_cloud.gdshader           draws up to `max_amplification` beads per point; 
   a direction, e.g. back along a bullet's path.
 * **Singularity.** `PointCloud.gather` (1 → 0) packs a cloud's atoms into a
   small swarming ball at `gather_center`, then releases them in three acts:
-  an explosion that hurls every atom far out (`gather_burst`), the cloud
-  thinning to faint specks; a build; and finally colour. `gather_mode`
+  an explosion that hurls every atom out in a ring (`gather_burst`,
+  `gather_flat`), far enough to vanish into the fog; a build; and finally
+  colour. `gather_mode`
   picks how a cloud is built: `RAIN` (atoms drop in from high above),
-  `DIRECT` (they glide straight out of the cloud and settle: floors) or
+  `DIRECT` (they skim back in low over the ground and settle: floors) or
   `GROW` (the whole model rises through the ground at `floor_y` in one
   piece). `gather_window` gives a cloud its share of the build;
   within it the build starts farthest from `gather_eye` (`gather_reach`).

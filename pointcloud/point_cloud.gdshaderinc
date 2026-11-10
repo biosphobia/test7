@@ -629,14 +629,17 @@ void vertex() {
 		// Act 1, the explosion: an enormous force. Every atom is hurled
 		// straight out, each at its own speed, and keeps going until the air
 		// has taken its speed away far from the centre. No clumps, no jets.
-		float u = clamp(x / 0.17, 0.0, 1.0);
-		float s1 = 1.0 - pow(1.0 - u, 4.0);
+		float u = clamp(x / 0.25, 0.0, 1.0);
+		float s1 = 1.0 - (1.0 - u) * (1.0 - u);
 		// The blast goes out sideways, as a ring: directions lie close to the
 		// horizontal plane, and most atoms ride near the front of the wave.
 		float ring_a = hash01(gk + 31u) * TAU;
-		float lift = (hash01(gk + 33u) + hash01(gk + 35u) - 1.0) * gather_flat;
+		// Thickest in the plane of the ring, thinning steadily above and below
+		// with no edge (a two-sided exponential fall-off).
+		float lift = -log(max(hash01(gk + 33u), 1e-4)) * gather_flat * 0.55
+				* (hash01(gk + 35u) < 0.5 ? -1.0 : 1.0);
 		vec3 dirv = normalize(vec3(cos(ring_a), lift, sin(ring_a)));
-		float speed = mix(0.45, 1.0, pow(hash01(gk + 13u), 0.4));
+		float speed = mix(0.6, 1.0, pow(hash01(gk + 13u), 0.4));
 		vec3 blown = dirv * gather_burst * speed * s1;
 		// (still drifting slowly outwards while it waits)
 		blown *= 1.0 + 0.25 * x;
@@ -650,12 +653,9 @@ void vertex() {
 		from = gather_center + vec3(rel.x * cos(wheel) - rel.z * sin(wheel), rel.y,
 				rel.x * sin(wheel) + rel.z * cos(wheel));
 
-		// The cloud thins out fast: within a moment of the blast three atoms
-		// in four have dwindled to nothing and the rest are faint specks, so
-		// the view is calm, not a field of grain. Those fade too in time.
-		float keep = hash01(gk + 73u) < 0.25 ? 1.0 : 1.0 - smoothstep(0.02, 0.09, x);
-		keep *= 1.0 - smoothstep(0.38, 0.52, x);
-		float speck = mix(3.2, 1.0, smoothstep(0.01, 0.08, x));
+		// Nothing fades or shrinks: the blast simply carries the atoms out of
+		// sight, into the haze, and they stay small specks while they travel.
+		float speck = 2.0;
 
 		// Act 2, the world is built. Each cloud has its own window of the
 		// build (the ground first, say); within it the build starts farthest
@@ -670,7 +670,7 @@ void vertex() {
 		vec3 wmid = (MODEL_MATRIX * vec4(bounds_min + bounds_size * 0.5, 1.0)).xyz;
 		float cloud_start = 0.08 + 0.74 * mix(gather_window.x, gather_window.y,
 				1.0 - clamp(distance(wmid, gather_eye) / gather_reach, 0.0, 1.0));
-		float start = (gather_mode == 1 ? 0.045 : 0.08) + 0.74 * order + (gather_mode == 1 ? 0.06 : 0.012) * seed;
+		float start = (gather_mode == 1 ? 0.09 : 0.08) + 0.74 * order + (gather_mode == 1 ? 0.06 : 0.012) * seed;
 		float t = clamp((x - start) / (gather_mode == 1 ? 0.115 : 0.08), 0.0, 1.0);
 		if (gather_mode == 1) {
 			// Straight out of the cloud into place (floors), unhurried: each
@@ -678,12 +678,13 @@ void vertex() {
 			// settles the last little way like snow. Neighbours arrive at
 			// different moments, so the surface thickens gradually instead of
 			// advancing as a hard edge.
+			// They come back out of the haze low over the ground, skimming in
+			// from wherever the blast took them, and sink the last little way.
 			float e = t * t * t * (t * (t * 6.0 - 15.0) + 10.0);
-			float hover = point_spacing * 30.0 * (1.0 - smoothstep(0.7, 1.0, t));
-			p = mix(from, place + vec3(0.0, hover, 0.0), e);
-			size_scale *= max(keep, smoothstep(0.0, 0.2, t));
-			gather_cap = mix(speck, 1.2, smoothstep(0.0, 0.25, t));
-			gather_cap = mix(gather_cap, 4096.0, smoothstep(0.9, 1.0, t));
+			float skim = (0.15 + 0.9 * hash01(gk + 81u)) * (1.0 - smoothstep(0.55, 1.0, t));
+			vec3 low = vec3(from.x, gather_floor + 0.15 + 0.9 * hash01(gk + 81u), from.z);
+			p = mix(t > 0.0 ? low : from, place + vec3(0.0, skim, 0.0), e);
+			gather_cap = mix(speck, 4096.0, smoothstep(0.9, 1.0, t));
 		} else if (gather_mode == 2) {
 			// Raised out of the ground: the whole model comes up through the
 			// floor as one piece, like something surfacing. Atoms are hidden
@@ -698,7 +699,6 @@ void vertex() {
 				t = g;
 			} else {
 				p = from;
-				size_scale *= keep * (1.0 - smoothstep(cloud_start - 0.1, cloud_start - 0.02, x));
 				gather_cap = speck;
 			}
 		} else {
@@ -713,7 +713,6 @@ void vertex() {
 				gather_cap = mix(1.4, 4096.0, smoothstep(0.82, 1.0, t));
 			} else {
 				p = from;
-				size_scale *= keep;
 				gather_cap = speck;
 			}
 		}

@@ -84,10 +84,9 @@ func start_intro() -> void:
 	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 	player.frozen = true  # physics keeps running: the body settles on the ground now, not later
 	_hud_layer.visible = false
-	_env.fog_density = 0.0  # clear air: the blast is seen all the way out
 	_intro_cam = Camera3D.new()
 	_intro_cam.fov = 60.0
-	_intro_cam.far = 400.0
+	_intro_cam.far = 90.0  # beyond the haze there is nothing to see
 	add_child(_intro_cam)
 	# Straight behind the player's eyes, looking the same way: the whole
 	# intro is seen along the player's own line of sight, and entering the
@@ -100,7 +99,7 @@ func start_intro() -> void:
 		var cloud := c as PointCloud
 		cloud.gather_center = _intro_centre
 		cloud.gather_reach = 50.0
-		cloud.gather_burst = 220.0
+		cloud.gather_burst = 90.0  # just beyond the haze
 		# The floor is laid first, then everything on it, then the player.
 		if cloud in _ground_tiles:
 			cloud.gather_window = Vector2(0.0, 0.25)
@@ -179,10 +178,6 @@ func _intro_release() -> void:
 	for c in get_tree().get_nodes_in_group(&"point_clouds"):
 		var cloud := c as PointCloud
 		cloud.create_tween().tween_property(cloud, "gather", 0.0, 10.0)
-	# The haze gathers as the floor forms, swallowing the far-flung atoms.
-	var fog := create_tween()
-	fog.tween_interval(0.5)
-	fog.tween_property(_env, "fog_density", 1.0, 2.0)
 	# The blast shakes the camera hard and throws it back.
 	_intro_shake = 1.0
 	var back := _intro_cam.global_position + _intro_cam.global_basis.z * 6.0
