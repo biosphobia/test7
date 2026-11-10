@@ -40,7 +40,9 @@ quarter of the way closer. Then it explodes with a hard screen shake: every
 atom is blown outwards in jets that keep streaming past the camera. Out of
 that the world is built like a digital one, atoms travelling along the axes
 snapped to a pixel grid and slotting into place, starting at the far end of
-the world and coming towards the viewer, the player last. The camera then drops into
+the world and coming towards the viewer, the player last. Every atom is white
+until it is in place, then takes on its own colour at its own pace; the
+blast empties its middle as it expands, clearing the view. The camera then drops into
 the player's head and hands over control.
 
 | Input | Action |

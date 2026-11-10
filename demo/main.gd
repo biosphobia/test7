@@ -125,7 +125,7 @@ func intro_bang() -> void:
 	# The flash of the explosion; the beams die with it.
 	tw.tween_property(self, "_intro_flash", 0.0, 0.8).from(1.0).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
 	tw.parallel().tween_property(self, "_intro_crack", 0.0, 0.5)
-	tw.tween_interval(10.0)
+	tw.tween_interval(11.6)
 	tw.tween_callback(func(): intro = Intro.ENTER)
 	# Into the player's eyes.
 	tw.tween_method(func(k: float):
@@ -150,7 +150,7 @@ func _intro_release() -> void:
 	for c in get_tree().get_nodes_in_group(&"point_clouds"):
 		var cloud := c as PointCloud
 		cloud.gather_last = 1.0 if player.is_ancestor_of(cloud) else 0.0
-		cloud.create_tween().tween_property(cloud, "gather", 0.0, 10.5)
+		cloud.create_tween().tween_property(cloud, "gather", 0.0, 12.0)
 	# The blast shakes the camera hard and throws it back.
 	_intro_shake = 1.0
 	var back := _intro_cam.global_position + _intro_cam.global_basis.z * 6.0

@@ -635,6 +635,9 @@ void vertex() {
 		// The blast never comes to rest: the jets keep streaming outwards and
 		// writhing for as long as their atoms are waiting to be placed.
 		len *= gather_burst * (1.0 + 7.0 * x);
+		// ...and the middle empties: after the first instant everything is
+		// pushed out beyond a growing hollow, clearing the view.
+		len += gather_burst * 3.2 * smoothstep(0.04, 0.4, x);
 		vec3 blown = dirv * len;
 		blown += rand_dir(gk + 41u) * len * (spray ? 0.0 : 0.04);
 		blown += flow(blown * 0.16 + float(jet), cloud_time * 0.7) * len * (0.12 + 0.35 * x) * s1;
@@ -650,7 +653,7 @@ void vertex() {
 		order = mix(order, 1.0, gather_last);
 		// Each atom's trip is short, so at any moment most atoms are either
 		// still in the blast's jets or already in place, not in between.
-		float start = 0.2 + 0.68 * order + 0.02 * seed;
+		float start = 0.15 + 0.53 * order + 0.02 * seed;
 		float t = clamp((x - start) / 0.1, 0.0, 1.0);
 		float tx = smoothstep(0.0, 1.0, clamp(t * 3.0, 0.0, 1.0));
 		float tz = smoothstep(0.0, 1.0, clamp(t * 3.0 - 1.0, 0.0, 1.0));
@@ -661,13 +664,15 @@ void vertex() {
 		q = mix(q, (floor(q / cell) + 0.5) * cell, snap);
 		p = q;
 		disp = max(disp, distance(p, place));
-		// Hot in the ball and the first instant of the blast, then its own
-		// colour; a cool flash as it slots into place.
+		// Every atom is white until it is in place; then it takes on its own
+		// colour (and the surface texture) at its own pace.
+		float landed = start + 0.1 + 0.04 * hash01(gk + 51u);
+		float own = clamp((x - landed) / (0.05 + 0.09 * hash01(gk + 53u)), 0.0, 1.0);
+		own = own * own * (3.0 - 2.0 * own);
+		c = vec4(mix(vec3(1.0), c.rgb, own), c.a * own);
+		// The ball glows a little (warm), more when it is disturbed.
 		float heat = gather_heat * (1.0 - smoothstep(0.03, 0.22, x));
-		c.rgb = mix(c.rgb, vec3(1.0, 0.9, 0.7), clamp(heat * 0.5, 0.0, 0.9));
-		float slot = sin(clamp((t - 0.7) / 0.3, 0.0, 1.0) * PI);
-		c.rgb = mix(c.rgb, vec3(0.55, 0.95, 1.0), slot * 0.7);
-		glow += heat * 0.4;
+		glow += heat * 0.15;
 	}
 
 	if (cull) {
