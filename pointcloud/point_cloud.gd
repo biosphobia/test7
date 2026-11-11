@@ -235,6 +235,9 @@ static var default_square := false
 ## a point of the menu set with set_menu().
 ## 0 = atoms travel to the menu on wide arcs, 1 = on a spiral about its axis.
 var menu_spiral := 0.0
+## This cloud's place in the order in which clouds join a menu: 0 = first in
+## and last out, 1 = last in and first out.
+var menu_order := 0.0
 @export_range(0.0, 1.0) var menu_amount := 0.0:
 	set(v):
 		var was := menu_amount
@@ -249,6 +252,7 @@ var menu_spiral := 0.0
 func set_menu(menu: AtomMenu, menu_world: Transform3D, hover := Rect2(), time := 0.0, sky_top := Color(0.05, 0.07, 0.14), sky_low := Color(0.32, 0.26, 0.36)) -> void:
 	_sp(&"menu_nrm_tex", menu.nrm_tex)
 	_sp(&"menu_spiral", menu_spiral)
+	_sp(&"menu_order", menu_order)
 	_sp(&"menu_time", time)
 	_sp(&"menu_up", global_transform.basis.inverse() * Vector3.UP)
 	var st := sky_top.srgb_to_linear()

@@ -147,6 +147,7 @@ uniform float menu_time = 0.0;             // keeps running while the game is pa
 uniform vec3 menu_up = vec3(0.0, 1.0, 0.0); // world up, in local space
 uniform vec3 menu_sky_top = vec3(0.004, 0.006, 0.018); // sky colours (linear), for dust
 uniform vec3 menu_sky_low = vec3(0.084, 0.055, 0.107);
+uniform float menu_order = 0.0;            // this cloud's place in the order, 0 (first in, last out) .. 1
 uniform float menu_spiral = 0.0;           // 0 = arc path (opening), 1 = spiral path (closing)
 uniform float menu_dust_share = 0.003;
 uniform float menu_sky_gain = 3.5;         // the sky is drawn brighter than a surface of the same colour
@@ -852,8 +853,10 @@ void vertex() {
 		// together: each object is drawn off in ribbons, not all at once.
 		float far = clamp(distance(place, menu_xform[3].xyz) / 22.0, 0.0, 1.0);
 		float clump = 0.5 + 0.5 * flow(place * 0.9, 0.0).x;
-		float mu = clamp((menu_amount - mix(0.3, 0.46, menu_spiral) * far - mix(0.12, 0.04, menu_spiral) * clump
-				- mix(0.05, 0.02, menu_spiral) * hash01(mk + 11u)) / mix(0.5, 0.48, menu_spiral), 0.0, 1.0);
+		// Each object goes as one: all its atoms share a slot in the order
+		// (menu_order), with only a little spread between them, so objects
+		// are drawn in, and spat back out, one after another.
+		float mu = clamp((menu_amount - 0.56 * menu_order - 0.05 * clump - 0.03 * hash01(mk + 11u)) / 0.36, 0.0, 1.0);
 		float me = mu * mu * mu * (mu * (mu * 6.0 - 15.0) + 10.0);
 		if (hash01(mk + 23u) < menu_dust_share) {
 			// Dust: a few atoms never join. They spread evenly through the empty

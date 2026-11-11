@@ -6,8 +6,8 @@ extends Node
 ## resuming sends each one back and the game carries on exactly where it was.
 ## This node keeps running while everything else is paused.
 
-const OPEN_TIME := 0.9
-const CLOSE_TIME := 1.5
+const OPEN_TIME := 1.1
+const CLOSE_TIME := 1.4
 const DISTANCE := 2.0
 
 var main: Node3D           # demo/main.gd
@@ -85,19 +85,25 @@ func set_open(on: bool) -> void:
 					continue
 				if _in_frustum(planes, cloud.global_transform * cloud.data.aabb):
 					_clouds.append(cloud)
+			# The farthest things are drawn in first and the nearest last; on
+			# resume the nearest are spat out first, so it starts at once.
+			var eye := cam.global_position
+			_clouds.sort_custom(func(a: PointCloud, b: PointCloud) -> bool:
+				return (a.global_transform * a.data.aabb.get_center()).distance_squared_to(eye) \
+						< (b.global_transform * b.data.aabb.get_center()).distance_squared_to(eye))
+			for i in _clouds.size():
+				_clouds[i].menu_order = 1.0 - float(i) / maxf(_clouds.size() - 1, 1)
 	if _tween:
 		_tween.kill()
 	_tween = create_tween()
 	# Eased at both ends, and with no dead time: the game stops the instant the
 	# menu is called and is running again the instant it is dismissed, while
 	# the atoms are still on their way home.
-	# Closing takes a little longer and settles gently: spat out fast, then
-	# every atom glides the last of the way home.
+	# The same motion both ways: objects are sucked in one after another, and
+	# spat back out in reverse.
 	var span := maxf(absf((1.0 if on else 0.0) - amount), 0.3)
-	if on:
-		_tween.tween_property(self, "amount", 1.0, OPEN_TIME * span).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
-	else:
-		_tween.tween_property(self, "amount", 0.0, CLOSE_TIME * span).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
+	_tween.tween_property(self, "amount", 1.0 if on else 0.0, (OPEN_TIME if on else CLOSE_TIME) * span) \
+			.set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_OUT)
 	if not on:
 		get_tree().paused = false
 		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
@@ -122,7 +128,7 @@ func _process(delta: float) -> void:
 		return
 	_time += delta
 	# Arcs on the way in, a spiral on the way out (blended if reversed mid-way).
-	_spiral = move_toward(_spiral, 0.0 if open else 1.0, delta * (5.0 if amount > 0.0 and amount < 1.0 else 1000.0))
+	_spiral = 1.0   # the same path in both directions
 	var cam: Camera3D = main.player.camera
 	# Parallax: the menu leans and slides a little against the pointer, so its
 	# layers (back panel, slabs, lettering) shift against each other.
