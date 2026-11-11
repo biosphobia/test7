@@ -178,7 +178,7 @@ uniform vec4 carve_a[48];  // xyz centre (rest space), w start time
 uniform vec4 carve_b[48];  // x radius, y force, z raggedness, w seed
 uniform vec4 carve_c[48];  // xyz kick: extra direction for the debris (local)
 // How dark the inside of a hole gets (fake ambient occlusion).
-uniform float cavity_strength : hint_range(0.0, 1.0) = 0.5;
+uniform float cavity_strength : hint_range(0.0, 1.0) = 0.15;
 // Directional shadow maps: dots are drawn as plain squares this much larger
 // than surface dots (closes gaps whatever the shadow map's resolution), and
 // pushed away from the light by about their radius so surfaces can't shadow
@@ -449,6 +449,7 @@ void vertex() {
 	float glow = 0.0;
 	float fly = 0.0; // how much this dot is "in flight" (0 = on the surface)
 	float disp = 0.0; // how far effects have carried it from its place
+	float wall_lit = 0.0; // hole walls: share of the colour that is self-lit
 	float gather_cap = 4096.0; // pixel-size limit while being built (singularity)
 	bool at_rest = still && !use_skin;
 	vec4 st = vec4(-1.0);
@@ -488,6 +489,9 @@ void vertex() {
 		vec3 wall_n = normalize(st.yzw + vec3(1e-6));
 		n = normalize(mix(n, wall_n, cav * (on_surface ? 0.35 : 1.0)) + vec3(1e-6));
 		c.rgb *= 1.0 - cavity_strength * cav * (on_surface ? 0.4 : 1.0);
+		// The inside glows a little with its own colour, so a hole facing away
+		// from the light still shows what the object is made of.
+		wall_lit = 0.8 * cav * (on_surface ? 0.0 : 1.0);
 	}
 
 	// --- skeletal animation (linear blend skinning)
@@ -835,6 +839,7 @@ void vertex() {
 	float menu_dust = 0.0;  // 1: it is one of the few left drifting as dust
 	float menu_size = menu_atom_size;
 	float menu_lit = 0.0;   // share of its colour that glows by itself
+	menu_lit = wall_lit;
 	if (menu_amount > 0.0 && !cull) {
 		uint mk = pcg_hash(uid * 2654435761u + 97u);
 		int mi = int(mk % uint(max(menu_count, 1)));
@@ -1026,7 +1031,9 @@ void vertex() {
 	// detail aims for). Once loose it never draws bigger than that, however
 	// close it flies to the camera or however sparse its part of the model.
 	// (Interior points are always held to it: they never have to close a surface.)
-	float loose = on_surface ? max(smoothstep(0.0, agap * 2.0, disp), fly) : 1.0;
+	// (...except where they line a hole: there they are the surface, and draw
+	// at full size so the inside of a solid object is solid, not see-through.)
+	float loose = (on_surface || st.x < -1.0) ? max(smoothstep(0.0, agap * 2.0, disp), fly) : 1.0;
 	// Depth: a loose atom nearer the viewer than the middle of its cloud is
 	// drawn bigger and brighter, one further away smaller and dimmer
 	// (exaggerated by atom_depth), so a burst reads as a volume, not a flat
