@@ -145,8 +145,11 @@ uniform sampler2D menu_col_tex : filter_nearest, repeat_disable;
 uniform sampler2D menu_nrm_tex : filter_nearest, repeat_disable;
 uniform float menu_time = 0.0;             // keeps running while the game is paused
 uniform vec3 menu_up = vec3(0.0, 1.0, 0.0); // world up, in local space
-uniform vec3 menu_dust_color = vec3(0.3, 0.25, 0.37); // dust fades towards this (the sky)
-uniform float menu_dust_share = 0.06;      // fraction of atoms left drifting as dust
+uniform vec3 menu_sky_top = vec3(0.004, 0.006, 0.018); // sky colours (linear), for dust
+uniform vec3 menu_sky_low = vec3(0.084, 0.055, 0.107);
+uniform float menu_dust_share = 0.003;
+uniform float menu_sky_gain = 2.1;         // the sky is drawn brighter than a surface of the same colour
+uniform float menu_dust_opacity = 1.0;     // fraction of atoms left drifting as dust
 uniform float menu_atom_size = 0.017;      // world size of an atom on its way to, or in, a menu
 uniform int menu_count = 1;
 uniform int menu_tex_width = 512;
@@ -230,6 +233,8 @@ varying highp vec4 v_misc_c;
 #define v_ysign v_misc_b.z
 #define v_bead v_misc_b.w     // 1 = draw as a round bead
 #define v_fly v_misc_c.x      // 0 = resting on the surface .. 1 = in flight
+#define v_dust v_misc_c.w     // 1 = a dust mote: soft-edged, unshaded
+#define v_menu v_misc_c.z     // share of the colour that is self-lit (menu atoms, dust)
 #define v_shadow v_misc_c.y   // 1 = drawing into a directional shadow map
 varying highp vec3 v_center;   // dot centre, view space
 varying highp vec3 v_vnormal;  // dot normal, view space
@@ -825,7 +830,9 @@ void vertex() {
 	// --- menu: the atom leaves its place and flies through the scene to a
 	// point of the menu, where it sits as part of a lit, solid shape.
 	float menu_e = 0.0;     // this atom's progress into the menu
-	float menu_dust = 0.0;  // > 0: it is one of the few left drifting as dust
+	float menu_dust = 0.0;  // 1: it is one of the few left drifting as dust
+	float menu_size = menu_atom_size;
+	float menu_lit = 0.0;   // share of its colour that glows by itself
 	if (menu_amount > 0.0 && !cull) {
 		uint mk = pcg_hash(uid * 2654435761u + 97u);
 		int mi = int(mk % uint(max(menu_count, 1)));
@@ -836,7 +843,7 @@ void vertex() {
 		if (mpos.x > menu_hover.x && mpos.y > menu_hover.y && mpos.x < menu_hover.z && mpos.y < menu_hover.w) {
 			mcol = mix(mcol, vec3(1.0), 0.35); // the button under the pointer lights up
 		}
-		mpos += rand_dir(mk + 3u) * 0.003;
+		mpos += rand_dir(mk + 3u) * 0.001;
 		vec3 place = p;
 		vec3 target = (menu_xform * vec4(mpos, 1.0)).xyz;
 		vec3 toward = normalize(mat3(menu_xform) * vec3(0.0, 0.0, 1.0));
@@ -846,18 +853,31 @@ void vertex() {
 		float clump = 0.5 + 0.5 * flow(place * 0.9, 0.0).x;
 		float mu = clamp((menu_amount - 0.3 * far - 0.12 * clump - 0.05 * hash01(mk + 11u)) / 0.5, 0.0, 1.0);
 		float me = mu * mu * mu * (mu * (mu * 6.0 - 15.0) + 10.0);
-		// (Only from further off than the menu: dust never drifts across its face.)
-		if (hash01(mk + 23u) < menu_dust_share && far > 0.16) {
-			// Dust: a few atoms never join. They lift off and drift slowly
-			// upwards for good, fading as they rise, then start again.
-			float cyc = fract(menu_time * (0.02 + 0.03 * hash01(mk + 29u)) + hash01(mk + 31u));
-			vec3 sway = flow(place * 0.6 + float(mk % 97u), menu_time * 0.15) * 0.25;
-			p = place + (menu_up * cyc * 3.5 + sway * cyc) * me;
-			menu_dust = me * smoothstep(0.0, 0.08, cyc) * (1.0 - cyc);
-			c.rgb = mix(c.rgb, mix(menu_dust_color, vec3(0.92, 0.9, 1.0), 0.5 * (1.0 - cyc)), me);
-			c.a *= 1.0 - me;
+		if (hash01(mk + 23u) < menu_dust_share) {
+			// Dust: a few atoms never join. They spread evenly through the empty
+			// space around and behind the menu and drift slowly upwards, each
+			// at its own pace: large, soft, barely-there motes.
+			float rate = 0.006 + 0.05 * hash01(mk + 29u) * hash01(mk + 37u);
+			float cyc = fract(menu_time * rate + hash01(mk + 31u));
+			vec3 dpos = vec3((hash01(mk + 41u) * 2.0 - 1.0) * 5.0, mix(-3.2, 3.2, cyc), -0.8 - 7.0 * hash01(mk + 43u));
+			dpos.xz += flow(dpos * 0.4 + float(mk % 97u), menu_time * 0.1).xz * 0.3;
+			p = mix(place, (menu_xform * vec4(dpos, 1.0)).xyz, me);
+			menu_e = me;
+			menu_dust = 1.0;
+			menu_size = 0.03 + 0.06 * hash01(mk + 47u);
+			// "Transparent": drawn in the colour of the sky behind it, lifted a
+			// little towards white; fainter still at the top and bottom of its
+			// climb (no alpha blending is involved).
+			vec3 wdir = mat3(INV_VIEW_MATRIX) * normalize((MODELVIEW_MATRIX * vec4(p, 1.0)).xyz);
+			float up = smoothstep(-0.35, 0.9, wdir.y);
+			// (Gains measured against the rendered sky, which is tone-mapped
+			// differently from surfaces.)
+			vec3 sky = mix(menu_sky_low, menu_sky_top, up) * menu_sky_gain * mix(1.0, 0.2, up);
+			float opacity = (0.03 + 0.07 * hash01(mk + 53u)) * sin(cyc * PI) * menu_dust_opacity;
+			vec3 mote = pow(mix(sky, vec3(1.0), opacity), vec3(1.0 / 2.2));
+			c = vec4(mix(c.rgb, mote, me), c.a * (1.0 - me));
+			menu_lit = me; // entirely self-coloured
 			disp = max(disp, 1.0 * me);
-			fly = max(fly, me); // a free speck: lit facing the viewer, not by its old surface
 		} else {
 			// A wide arc through the scene: out to one side and towards the
 			// viewer, in a ribbon with its neighbours.
@@ -868,6 +888,7 @@ void vertex() {
 					+ toward * arc * span * 0.12 * hash01(mk + 19u)
 					+ flow(place * 0.5 + clump * 3.0, menu_time * 0.4) * arc * 0.25;
 			menu_e = me;
+			menu_lit = 0.8 * smoothstep(0.6, 1.0, me); // mostly its own colour: an even, clean surface
 			// In flight it is a free, self-lit speck; once landed it is part of
 			// a surface again and is lit by the menu's own shape.
 			disp = max(disp, max(min(distance(p, place), distance(p, target)), 1e-6));
@@ -925,7 +946,7 @@ void vertex() {
 	float world_size = disc_size * obj_scale * size_scale;
 	// Menu atoms all have one real size, so in flight the near ones are big
 	// and the far ones small: they read as things in space, not as pixels.
-	world_size = mix(world_size, menu_atom_size * size_scale, smoothstep(0.0, 0.12, menu_e));
+	world_size = mix(world_size, menu_size * size_scale, smoothstep(0.0, 0.12, menu_e));
 	bool shadow_pass = PROJECTION_MATRIX[3][3] > 0.5; // orthographic = directional shadow map
 	// view_fade thins the cloud out evenly, atom by atom, in the view only: the
 	// model turns to nothing while its shadow stays.
@@ -957,7 +978,7 @@ void vertex() {
 	if (!ortho) {
 		px /= max(-vp.z, 1e-3); // perspective
 	}
-	v_alive = size_scale > 0.02 ? 1.0 : 0.0;
+	v_alive = size_scale > 0.02 && !(shadow_pass && menu_dust > 0.5) ? 1.0 : 0.0;
 	// On screen a resting atom is target_px * cover wide (that's what level of
 	// detail aims for). Once loose it never draws bigger than that, however
 	// close it flies to the camera or however sparse its part of the model.
@@ -981,7 +1002,7 @@ void vertex() {
 	px_cap = shadow_pass ? px_cap : min(px_cap, gather_cap);
 	if (!shadow_pass) {
 		px_cap = mix(px_cap, 12.0, smoothstep(0.0, 0.12, menu_e));
-		px_cap = mix(px_cap, 1.6, clamp(menu_dust * 8.0, 0.0, 1.0)); // dust is the finest speck
+		px_cap = mix(px_cap, 16.0, menu_dust * smoothstep(0.0, 0.12, menu_e));
 	}
 	POINT_SIZE = v_alive > 0.5 ? clamp(px, min(min_pixel_size, px_cap), px_cap) : 1.0;
 	if (shadow_pass && v_alive > 0.5) {
@@ -1006,6 +1027,8 @@ void vertex() {
 	v_bead = bead ? 1.0 : 0.0;
 	v_fly = fly;
 	v_shadow = shadow_pass ? 1.0 : 0.0;
+	v_menu = menu_lit;
+	v_dust = menu_dust;
 	v_ysign = PROJECTION_MATRIX[1][1] < 0.0 ? -1.0 : 1.0;
 	v_shape = shape;
 	v_texpos = rest;
@@ -1051,6 +1074,14 @@ void fragment() {
 		if (!square && r2 > 1.0) {
 			discard;
 		}
+		if (v_dust > 0.5) {
+			// A soft edge without blending: towards the rim, more and more
+			// pixels are simply left out (an ordered pattern, so it is even).
+			float ign = fract(52.9829189 * fract(dot(FRAGCOORD.xy, vec2(0.06711056, 0.00583715))));
+			if ((1.0 - r2) * 1.4 < ign) {
+				discard;
+			}
+		}
 		r2 = min(r2, 1.0); // (square atoms keep their corners)
 		vec3 bn = vec3(pc.x, -pc.y * v_ysign, sqrt(1.0 - r2));
 		// Beads only a few pixels wide can't show their roundness; their rims
@@ -1065,6 +1096,9 @@ void fragment() {
 		vec3 base_n = normalize(mix(vn, free_n, v_fly));
 		NORMAL = normalize(mix(base_n, bn, mix(bead_bulge, 1.0, v_fly) * detail));
 		bead_shade = mix(1.0, mix(1.0 - bead_edge_shade, 1.0, bn.z), detail * max(v_fly, bead_bulge));
+		if (v_dust > 0.5) {
+			bead_shade = 1.0;
+		}
 		// The surface point under this pixel: intersect the pixel's view ray
 		// with the bead's surface plane. Texture, box trimming, lighting and
 		// shadows use it, so they're exact per pixel (crisp lines and shadow
@@ -1192,7 +1226,7 @@ void fragment() {
 		ALBEDO = vec3(0.0);
 		EMISSION = col;
 	} else {
-		float self_lit = atom_glow * v_fly;
+		float self_lit = max(atom_glow * v_fly, v_menu);
 		ALBEDO = col * (1.0 - self_lit);
 		EMISSION = col * (emission_strength + self_lit);
 	}

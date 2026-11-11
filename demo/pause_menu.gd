@@ -31,6 +31,7 @@ func _ready() -> void:
 	_light.light_energy = 0.0
 	_light.light_color = Color(1.0, 0.97, 0.92)
 	add_child(_light)
+	menu = _build()   # built up front: no hitch the first time the game is paused
 
 
 func _build() -> AtomMenu:
@@ -85,13 +86,15 @@ func set_open(on: bool) -> void:
 	if _tween:
 		_tween.kill()
 	_tween = create_tween()
-	_tween.tween_property(self, "amount", 1.0 if on else 0.0, OPEN_TIME * absf((1.0 if on else 0.0) - amount))
+	# Eased at both ends, and with no dead time: the game stops the instant the
+	# menu is called and is running again the instant it is dismissed, while
+	# the atoms are still on their way home.
+	_tween.tween_property(self, "amount", 1.0 if on else 0.0, OPEN_TIME * maxf(absf((1.0 if on else 0.0) - amount), 0.3)) \
+			.set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
 	if not on:
-		# The game resumes only once every atom is back in its place.
-		_tween.tween_callback(func():
-			get_tree().paused = false
-			main._hud_layer.visible = true
-			Input.mouse_mode = Input.MOUSE_MODE_CAPTURED)
+		get_tree().paused = false
+		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+		_tween.tween_callback(func(): main._hud_layer.visible = true)
 
 
 static func _in_frustum(planes: Array[Plane], box: AABB) -> bool:
@@ -126,7 +129,7 @@ func _process(delta: float) -> void:
 			hover = menu.buttons[id]
 	for cloud in _clouds:
 		if is_instance_valid(cloud):
-			cloud.set_menu(menu, menu_world, hover, _time, Color(0.42, 0.34, 0.48))
+			cloud.set_menu(menu, menu_world, hover, _time)
 			cloud.menu_amount = amount
 	# A light of its own, up and to the left of the viewer, so the menu's
 	# slabs and letters are shaded whichever way the sun happens to fall.

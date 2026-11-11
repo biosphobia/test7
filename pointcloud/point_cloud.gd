@@ -244,11 +244,14 @@ static var default_square := false
 
 ## Points this cloud's atoms at a menu (see AtomMenu). `menu_world` places
 ## the menu in the world; `hover` is a menu-space rect to highlight.
-func set_menu(menu: AtomMenu, menu_world: Transform3D, hover := Rect2(), time := 0.0, dust_color := Color(0.3, 0.25, 0.37)) -> void:
+func set_menu(menu: AtomMenu, menu_world: Transform3D, hover := Rect2(), time := 0.0, sky_top := Color(0.05, 0.07, 0.14), sky_low := Color(0.32, 0.26, 0.36)) -> void:
 	_sp(&"menu_nrm_tex", menu.nrm_tex)
 	_sp(&"menu_time", time)
 	_sp(&"menu_up", global_transform.basis.inverse() * Vector3.UP)
-	_sp(&"menu_dust_color", Vector3(dust_color.r, dust_color.g, dust_color.b))
+	var st := sky_top.srgb_to_linear()
+	var sl := sky_low.srgb_to_linear()
+	_sp(&"menu_sky_top", Vector3(st.r, st.g, st.b))
+	_sp(&"menu_sky_low", Vector3(sl.r, sl.g, sl.b))
 	_sp(&"menu_pos_tex", menu.pos_tex)
 	_sp(&"menu_col_tex", menu.col_tex)
 	_sp(&"menu_count", menu.count)
