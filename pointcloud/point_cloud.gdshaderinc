@@ -81,6 +81,10 @@ uniform float morph_stagger : hint_range(0.0, 0.95) = 0.5;
 uniform float morph_arc = 0.3;
 // How far morphing atoms stray from the straight path while they swarm.
 uniform float morph_swarm = 0.7;
+uniform bool morph_stream = false;         // reassemble as a stream instead of burst-and-swarm
+uniform vec3 morph_focus = vec3(0.0);      // stream: point the new shape grows out from (local)
+uniform float morph_span = 1.0;            // stream: distance from the focus to the farthest atom
+uniform bool morph_reverse = false;        // stream: far end first (the shape draws back in)
 uniform float morph_reach_max = 1000000.0; // cap on how far the burst throws atoms
 uniform float morph_flash = 0.0;           // atoms whiten mid-morph by this much (0..1)
 // Explosions: twist around the vertical axis and turbulent streams.
@@ -515,13 +519,35 @@ void vertex() {
 		// Swarm in: curve towards the target along the flow, not straight.
 		vec3 sw = flow(tp * 0.9 + grp * 4.0, cloud_time * 1.5) * morph_swarm * 0.6 * sin(t * PI);
 		p = mix(p, tp, t) + sw;
+		float ct = smoothstep(0.0, 1.0, clamp(0.45 * s1 + 0.55 * t, 0.0, 1.0));
+		float hot = sin(clamp(ct, 0.0, 1.0) * PI) * s1 * morph_flash;
+		if (morph_stream) {
+			// Reassembly: no burst. The model flows into the new one as a
+			// stream. Atoms go in order of distance from morph_focus: the new
+			// shape grows outwards from that point while the old one is
+			// drawn into it (or, reversed, the far end leaves first and the
+			// shape draws back in). Each atom glides along a gentle spiral
+			// from its old place to its new one, turning colour on the way.
+			float far = clamp(distance(morph_reverse ? from : tp, morph_focus) / max(morph_span, 1e-4), 0.0, 1.0);
+			float when = (morph_reverse ? 1.0 - far : far) * 0.62 + 0.05 * seed;
+			float u = clamp((morph - when) / 0.33, 0.0, 1.0);
+			float e = u * u * u * (u * (u * 6.0 - 15.0) + 10.0);
+			vec3 along = normalize(tp - from + vec3(1e-6));
+			vec3 side = normalize(cross(along, vec3(0.3, 1.0, 0.2)) + vec3(1e-6));
+			vec3 up2 = cross(along, side);
+			float turn = e * 5.0 + seed * TAU;
+			float wide = sin(e * PI) * morph_arc * (0.4 + 0.6 * hash01(uid * 23u + 7u));
+			p = mix(from, tp, e) + (side * cos(turn) + up2 * sin(turn)) * wide;
+			t = e;
+			morph_t = e;
+			ct = e;
+			hot = sin(e * PI) * morph_flash;
+		}
 		disp = max(disp, min(distance(p, from), distance(p, tp)));
 		// Colour changes all the way through the flight, not only at the end:
 		// it starts to turn as the atom leaves and passes through a bright,
 		// washed-out glow at the height of the burst (morph_flash).
-		float ct = smoothstep(0.0, 1.0, clamp(0.45 * s1 + 0.55 * t, 0.0, 1.0));
 		c = mix(c, tcol, ct);
-		float hot = sin(clamp(ct, 0.0, 1.0) * PI) * s1 * morph_flash;
 		c.rgb = mix(c.rgb, vec3(1.0), 0.5 * hot);
 		n = normalize(mix(n, tn, t) + vec3(1e-6));
 		if (!beads) {

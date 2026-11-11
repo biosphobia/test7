@@ -374,6 +374,27 @@ enum GatherMode {
 		_sp(&"morph_swarm", v)
 ## 0..1: morphing atoms pass through a bright, whitened glow at the height of
 ## the burst, so the old colour melts into the new one.
+## Morph as a reassembly: no burst. Atoms stream from their old places to
+## their new ones along gentle spirals, in order of distance from
+## morph_focus (local space; morph_span is the distance of the farthest).
+## The new shape grows outwards from the focus; with morph_reverse the far
+## end goes first and the shape draws back in. morph_arc is the spiral's width.
+@export var morph_stream := false:
+	set(v):
+		morph_stream = v
+		_sp(&"morph_stream", v)
+@export var morph_focus := Vector3.ZERO:
+	set(v):
+		morph_focus = v
+		_sp(&"morph_focus", v)
+@export var morph_span := 1.0:
+	set(v):
+		morph_span = v
+		_sp(&"morph_span", v)
+@export var morph_reverse := false:
+	set(v):
+		morph_reverse = v
+		_sp(&"morph_reverse", v)
 ## Cap (world units) on how far a morph's burst throws the atoms. By default
 ## it scales with the model's size.
 @export var morph_reach_max := 1000000.0:
@@ -530,7 +551,7 @@ func _init() -> void:
 			&"wobble_amplitude", &"wobble_frequency", &"wobble_speed", &"explode", &"explode_center",
 			&"dissolve", &"dissolve_direction", &"dissolve_directional", &"dissolve_spread",
 			&"dissolve_drift", &"dissolve_edge_color", &"glow_strength", &"morph", &"morph_stagger",
-			&"morph_arc", &"debris_lifetime", &"debris_gravity", &"beads", &"square", &"morph_swarm", &"morph_reach_max", &"morph_flash", &"atom_min_px", &"atom_max_px", &"atom_depth", &"bead_overlap", &"splats", &"clip_to_bounds", &"texture_tile", &"texture_offset"]:
+			&"morph_arc", &"debris_lifetime", &"debris_gravity", &"beads", &"square", &"morph_swarm", &"morph_stream", &"morph_focus", &"morph_span", &"morph_reverse", &"morph_reach_max", &"morph_flash", &"atom_min_px", &"atom_max_px", &"atom_depth", &"bead_overlap", &"splats", &"clip_to_bounds", &"texture_tile", &"texture_offset"]:
 		_sp(p, get(p))
 	_apply_element()
 
