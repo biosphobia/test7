@@ -235,18 +235,33 @@ static var default_square := false
 ## a point of the menu set with set_menu().
 @export_range(0.0, 1.0) var menu_amount := 0.0:
 	set(v):
+		var was := menu_amount
 		menu_amount = v
 		_sp(&"menu_amount", v)
+		if (was > 0.0) != (v > 0.0):
+			_update_aabb()
 
 
 ## Points this cloud's atoms at a menu (see AtomMenu). `menu_world` places
 ## the menu in the world; `hover` is a menu-space rect to highlight.
-func set_menu(menu: AtomMenu, menu_world: Transform3D, hover := Rect2()) -> void:
+func set_menu(menu: AtomMenu, menu_world: Transform3D, hover := Rect2(), time := 0.0, dust_color := Color(0.3, 0.25, 0.37)) -> void:
+	_sp(&"menu_nrm_tex", menu.nrm_tex)
+	_sp(&"menu_time", time)
+	_sp(&"menu_up", global_transform.basis.inverse() * Vector3.UP)
+	_sp(&"menu_dust_color", Vector3(dust_color.r, dust_color.g, dust_color.b))
 	_sp(&"menu_pos_tex", menu.pos_tex)
 	_sp(&"menu_col_tex", menu.col_tex)
 	_sp(&"menu_count", menu.count)
 	_sp(&"menu_tex_width", AtomMenu.TEX_WIDTH)
-	_sp(&"menu_xform", Projection(global_transform.affine_inverse() * menu_world))
+	var to_local := global_transform.affine_inverse() * menu_world
+	_sp(&"menu_xform", Projection(to_local))
+	# The cloud's atoms are now at the menu: its bounds must reach there too,
+	# or lights near the menu skip it and it can be culled.
+	var box := to_local * AABB(Vector3(-1.4, -1.1, -0.6), Vector3(2.8, 2.2, 1.2))
+	if not box.is_equal_approx(_menu_box):
+		_menu_box = box
+		if menu_amount > 0.0:
+			_update_aabb()
 	_sp(&"menu_hover", Vector4(hover.position.x, hover.position.y, hover.end.x, hover.end.y))
 
 
@@ -524,6 +539,7 @@ var _bind_bones := PackedInt32Array()
 var _bone_mats: Array[Transform3D] = []
 
 var _shadow_mat: ShaderMaterial
+var _menu_box := AABB()
 var _finish_waiting := false   # morph done, waiting for the carve bake
 var _finish_wait := 0.0
 var _shadow_mm: MultiMesh
@@ -1469,6 +1485,8 @@ static func _shared_chunk_mesh() -> ArrayMesh:
 func _update_aabb() -> void:
 	if data:
 		var box := data.aabb
+		if menu_amount > 0.0:
+			box = box.merge(_menu_box)
 		if gather > 0.0 and is_inside_tree():
 			# Gathered atoms are far from the model: keep the cloud from being
 			# culled while they're out there.

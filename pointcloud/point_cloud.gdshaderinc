@@ -142,6 +142,12 @@ uniform float gather_color_at = 0.8;       // progress (0..1) at which colour st
 uniform float menu_amount = 0.0;          // 0 = in place, 1 = in the menu
 uniform sampler2D menu_pos_tex : filter_nearest, repeat_disable;
 uniform sampler2D menu_col_tex : filter_nearest, repeat_disable;
+uniform sampler2D menu_nrm_tex : filter_nearest, repeat_disable;
+uniform float menu_time = 0.0;             // keeps running while the game is paused
+uniform vec3 menu_up = vec3(0.0, 1.0, 0.0); // world up, in local space
+uniform vec3 menu_dust_color = vec3(0.3, 0.25, 0.37); // dust fades towards this (the sky)
+uniform float menu_dust_share = 0.06;      // fraction of atoms left drifting as dust
+uniform float menu_atom_size = 0.017;      // world size of an atom on its way to, or in, a menu
 uniform int menu_count = 1;
 uniform int menu_tex_width = 512;
 uniform mat4 menu_xform;                  // menu space -> this cloud's local space
@@ -816,31 +822,59 @@ void vertex() {
 		glow += heat * 0.15;
 	}
 
-	// --- menu: the atom leaves its place for a point of the menu
+	// --- menu: the atom leaves its place and flies through the scene to a
+	// point of the menu, where it sits as part of a lit, solid shape.
+	float menu_e = 0.0;     // this atom's progress into the menu
+	float menu_dust = 0.0;  // > 0: it is one of the few left drifting as dust
 	if (menu_amount > 0.0 && !cull) {
 		uint mk = pcg_hash(uid * 2654435761u + 97u);
 		int mi = int(mk % uint(max(menu_count, 1)));
 		ivec2 mt = ivec2(mi % menu_tex_width, mi / menu_tex_width);
 		vec3 mpos = texelFetch(menu_pos_tex, mt, 0).xyz;
 		vec3 mcol = texelFetch(menu_col_tex, mt, 0).rgb;
+		vec3 mnrm = texelFetch(menu_nrm_tex, mt, 0).xyz * 2.0 - 1.0;
 		if (mpos.x > menu_hover.x && mpos.y > menu_hover.y && mpos.x < menu_hover.z && mpos.y < menu_hover.w) {
 			mcol = mix(mcol, vec3(1.0), 0.35); // the button under the pointer lights up
 		}
-		mpos += rand_dir(mk + 3u) * 0.004;
-		// Each atom leaves at its own moment and sweeps in on an arc.
-		float mu = clamp((menu_amount - 0.35 * hash01(mk + 11u)) / 0.65, 0.0, 1.0);
-		float me = mu * mu * mu * (mu * (mu * 6.0 - 15.0) + 10.0);
+		mpos += rand_dir(mk + 3u) * 0.003;
 		vec3 place = p;
 		vec3 target = (menu_xform * vec4(mpos, 1.0)).xyz;
 		vec3 toward = normalize(mat3(menu_xform) * vec3(0.0, 0.0, 1.0));
-		vec3 side = normalize(cross(toward, target - place) + vec3(1e-6));
-		float arc = sin(me * PI);
-		p = mix(place, target, me) + side * arc * (0.2 + 0.8 * hash01(mk + 17u)) * 0.7
-				+ toward * arc * 0.25 * hash01(mk + 19u);
-		disp = max(disp, distance(p, place));
-		fly = max(fly, me);
-		c = vec4(mix(c.rgb, mcol, me), c.a * (1.0 - me));
-		n = normalize(mix(n, toward, me) + vec3(1e-6));
+		// What is nearest goes first, and atoms that sat together leave
+		// together: each object is drawn off in ribbons, not all at once.
+		float far = clamp(distance(place, menu_xform[3].xyz) / 22.0, 0.0, 1.0);
+		float clump = 0.5 + 0.5 * flow(place * 0.9, 0.0).x;
+		float mu = clamp((menu_amount - 0.3 * far - 0.12 * clump - 0.05 * hash01(mk + 11u)) / 0.5, 0.0, 1.0);
+		float me = mu * mu * mu * (mu * (mu * 6.0 - 15.0) + 10.0);
+		// (Only from further off than the menu: dust never drifts across its face.)
+		if (hash01(mk + 23u) < menu_dust_share && far > 0.16) {
+			// Dust: a few atoms never join. They lift off and drift slowly
+			// upwards for good, fading as they rise, then start again.
+			float cyc = fract(menu_time * (0.02 + 0.03 * hash01(mk + 29u)) + hash01(mk + 31u));
+			vec3 sway = flow(place * 0.6 + float(mk % 97u), menu_time * 0.15) * 0.25;
+			p = place + (menu_up * cyc * 3.5 + sway * cyc) * me;
+			menu_dust = me * smoothstep(0.0, 0.08, cyc) * (1.0 - cyc);
+			c.rgb = mix(c.rgb, mix(menu_dust_color, vec3(0.92, 0.9, 1.0), 0.5 * (1.0 - cyc)), me);
+			c.a *= 1.0 - me;
+			disp = max(disp, 1.0 * me);
+			fly = max(fly, me); // a free speck: lit facing the viewer, not by its old surface
+		} else {
+			// A wide arc through the scene: out to one side and towards the
+			// viewer, in a ribbon with its neighbours.
+			vec3 side = normalize(cross(toward, target - place) + vec3(1e-6));
+			float arc = sin(me * PI);
+			float span = distance(place, target);
+			p = mix(place, target, me) + side * arc * span * 0.22 * (0.4 + 0.6 * clump)
+					+ toward * arc * span * 0.12 * hash01(mk + 19u)
+					+ flow(place * 0.5 + clump * 3.0, menu_time * 0.4) * arc * 0.25;
+			menu_e = me;
+			// In flight it is a free, self-lit speck; once landed it is part of
+			// a surface again and is lit by the menu's own shape.
+			disp = max(disp, max(min(distance(p, place), distance(p, target)), 1e-6));
+			fly = max(fly, arc);
+			c = vec4(mix(c.rgb, mcol, smoothstep(0.35, 1.0, me)), c.a * (1.0 - me));
+			n = normalize(mix(n, mat3(menu_xform) * mnrm, me) + vec3(1e-6));
+		}
 	}
 
 	if (cull) {
@@ -889,6 +923,9 @@ void vertex() {
 	float disc_size = ps * lod_scale * amp_scale * (beads ? cover : (splats ? splat_scale : 1.0))
 			* (on_surface ? 1.0 : mix(interior_scale, target_interior_scale, morph_t));
 	float world_size = disc_size * obj_scale * size_scale;
+	// Menu atoms all have one real size, so in flight the near ones are big
+	// and the far ones small: they read as things in space, not as pixels.
+	world_size = mix(world_size, menu_atom_size * size_scale, smoothstep(0.0, 0.12, menu_e));
 	bool shadow_pass = PROJECTION_MATRIX[3][3] > 0.5; // orthographic = directional shadow map
 	// view_fade thins the cloud out evenly, atom by atom, in the view only: the
 	// model turns to nothing while its shadow stays.
@@ -899,10 +936,13 @@ void vertex() {
 	if (shadow_pass) {
 		// Loose atoms are specks: they cast no shadow (enlarged shadow dots
 		// would turn a cloud of them into dark blotches on the ground).
-		world_size *= shadow_disc_scale * (1.0 - max(smoothstep(0.0, point_spacing * lod_scale * 6.0, disp), fly));
+		world_size *= shadow_disc_scale * (1.0 - max(smoothstep(0.0, point_spacing * lod_scale * 6.0, disp), fly))
+				* (1.0 - smoothstep(0.0, 0.1, max(menu_e, menu_dust)));
 		// Push away from the light (view -z) by about the dot's radius.
 		// (plus a fixed distance covering the minimum dot size in the shadow map)
-		VERTEX += transpose(mat3(MODELVIEW_MATRIX)) * vec3(0.0, 0.0, -world_size * shadow_push - shadow_min_push * obj_scale)
+		// (Menu atoms sit in thin layers: pushed further, so each layer shadows
+		// the one behind it and never itself.)
+		VERTEX += transpose(mat3(MODELVIEW_MATRIX)) * vec3(0.0, 0.0, -world_size * shadow_push - (shadow_min_push + 0.09 * smoothstep(0.5, 1.0, menu_e)) * obj_scale)
 				/ max(obj_scale * obj_scale, 1e-8);
 		vp = MODELVIEW_MATRIX * vec4(VERTEX, 1.0);
 	}
@@ -939,6 +979,10 @@ void vertex() {
 	c.rgb *= mix(1.0, clamp(sqrt(nearness), 0.5, 1.0), shadow_pass ? 0.0 : loose * (1.0 - smoothstep(0.35, 1.0, morph_t)));
 	float px_cap = mix(max_pixel_size, loose_px, shadow_pass ? 0.0 : loose);
 	px_cap = shadow_pass ? px_cap : min(px_cap, gather_cap);
+	if (!shadow_pass) {
+		px_cap = mix(px_cap, 12.0, smoothstep(0.0, 0.12, menu_e));
+		px_cap = mix(px_cap, 1.6, clamp(menu_dust * 8.0, 0.0, 1.0)); // dust is the finest speck
+	}
 	POINT_SIZE = v_alive > 0.5 ? clamp(px, min(min_pixel_size, px_cap), px_cap) : 1.0;
 	if (shadow_pass && v_alive > 0.5) {
 		// In the shadow map every dot covers at least a few texels, so

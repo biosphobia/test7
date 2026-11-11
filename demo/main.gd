@@ -22,13 +22,7 @@ var _info: Label
 var _status: Label
 var _fire_cd := 0.0
 var _paint_hue := 0.0
-# Pause menu: made of the atoms that were on screen.
-var paused := false
-var _pause_menu: AtomMenu
-var _menu_world := Transform3D()
-var _menu_amount := 0.0
-var _menu_clouds: Array[PointCloud] = []
-var _menu_tween: Tween
+var pause_menu: PauseMenu   # Esc: made of the atoms that were on screen
 # Intro: everything starts packed into a singularity in the middle of the screen.
 enum Intro { NONE, WAIT, BANG, ENTER }
 var intro := Intro.NONE
@@ -65,6 +59,9 @@ func _ready() -> void:
 	player.name = "Player"
 	player.position = Vector3(0, 0.1, 6.5)
 	add_child(player)
+	pause_menu = PauseMenu.new()
+	pause_menu.main = self
+	add_child(pause_menu)
 	quw = Quw.new()
 	quw.name = "Quw"
 	player.camera.add_child(quw)
@@ -527,82 +524,11 @@ func _crate_image() -> Image:
 	return img
 
 
-# ================================================================ pause menu
-
-func _build_pause_menu() -> AtomMenu:
-	var m := AtomMenu.new()
-	m.add_plate(Rect2(-1.15, -0.8, 2.3, 1.6), -0.06, Color(0.07, 0.08, 0.12), 90000)   # backdrop
-	m.add_text("PAUSED", Vector2(0, 0.45), 0.24, 0.0, Color(0.95, 0.97, 1.0), 45000)
-	m.add_button("resume", "RESUME", Rect2(-0.55, -0.16, 1.1, 0.27), Color(0.15, 0.5, 0.75), Color.WHITE)
-	m.add_button("quit", "QUIT", Rect2(-0.55, -0.56, 1.1, 0.27), Color(0.7, 0.22, 0.25), Color.WHITE)
-	m.bake()
-	return m
-
-
-## Opens or closes the pause menu. Opening sends every atom on screen flying
-## into the menu; closing sends each one back where it came from.
-func set_paused(on: bool) -> void:
-	if on == paused or intro != Intro.NONE:
-		return
-	paused = on
-	player.frozen = on
-	worm.set_physics_process(not on)
-	worm.set_process(not on)
-	_hud_layer.visible = not on
-	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE if on else Input.MOUSE_MODE_CAPTURED
-	if on and _menu_amount == 0.0:
-		if _pause_menu == null:
-			_pause_menu = _build_pause_menu()
-		var cam := player.camera
-		_menu_world = Transform3D(cam.global_basis, cam.global_position - cam.global_basis.z * 1.9)
-		# Only what the camera can see takes part.
-		_menu_clouds.clear()
-		var planes := cam.get_frustum()
-		for c in get_tree().get_nodes_in_group(&"point_clouds"):
-			var cloud := c as PointCloud
-			if cloud.data == null or not cloud.is_visible_in_tree() or (cam.cull_mask & cloud.layers) == 0:
-				continue
-			if _in_frustum(planes, cloud.global_transform * cloud.data.aabb):
-				_menu_clouds.append(cloud)
-	if _menu_tween:
-		_menu_tween.kill()
-	_menu_tween = create_tween()
-	_menu_tween.tween_property(self, "_menu_amount", 1.0 if on else 0.0, 0.75 * absf((1.0 if on else 0.0) - _menu_amount))
-
-
-static func _in_frustum(planes: Array[Plane], box: AABB) -> bool:
-	for pl in planes:
-		var inside := false
-		for i in 8:
-			if not pl.is_point_over(box.get_endpoint(i)):
-				inside = true
-				break
-		if not inside:
-			return false
-	return true
-
-
-func _update_menu() -> void:
-	var hover := Rect2()
-	if paused and _menu_amount > 0.95:
-		var id := _pause_menu.button_at(get_viewport().get_mouse_position(), player.camera, _menu_world)
-		if id != "":
-			hover = _pause_menu.buttons[id]
-	for cloud in _menu_clouds:
-		if is_instance_valid(cloud):
-			cloud.set_menu(_pause_menu, _menu_world, hover)
-			cloud.menu_amount = _menu_amount
-
-
 # ================================================================ interaction
 
 func _process(delta: float) -> void:
 	if intro != Intro.NONE:
 		_update_intro(delta)
-		return
-	if paused or _menu_amount > 0.0:
-		_update_menu()
-	if paused:
 		return
 	_update_target()
 	_update_bullets(delta)
@@ -622,18 +548,6 @@ func _unhandled_input(event: InputEvent) -> void:
 		if intro == Intro.WAIT and event is InputEventMouseButton and event.pressed \
 				and event.button_index == MOUSE_BUTTON_LEFT and _intro_click_hits(event.position):
 			intro_bang()
-		return
-	if event.is_action_pressed("ui_cancel"):
-		set_paused(not paused)
-		return
-	if paused:
-		if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT \
-				and _menu_amount > 0.95:
-			match _pause_menu.button_at(event.position, player.camera, _menu_world):
-				"resume":
-					set_paused(false)
-				"quit":
-					get_tree().quit()
 		return
 	if event is InputEventMouseButton and event.pressed and Input.mouse_mode != Input.MOUSE_MODE_CAPTURED:
 		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED

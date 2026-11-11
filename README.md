@@ -70,7 +70,7 @@ is seen from straight behind the player's eyes.
 | F7 | atom blending on/off: fills small gaps between nearby loose atoms (off by default) |
 | F8 | round atoms (default) / square atoms |
 | F9 | smoothing filter on/off (edge-aware blend over the 3D view) |
-| Esc | pause: every atom on screen flies together into the pause menu (Resume / Quit), and back when it closes |
+| Esc | pause, at any moment: the whole game freezes and every atom on screen flies together to build the pause menu (Resume / Quit), a solid lit object that leans with the mouse; a little dust drifts up around it. Resuming sends every atom back |
 
 The scene holds about 3.5 million stored points, all drawn as beads. Up close
 each point splits into many smaller beads, so surfaces stay closed and
