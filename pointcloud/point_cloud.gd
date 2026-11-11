@@ -231,6 +231,25 @@ static var default_square := false
 		wobble_speed = v
 		_sp(&"wobble_speed", v)
 
+## Menus made of atoms: 0 = atoms in place, 1 = every drawn atom has flown to
+## a point of the menu set with set_menu().
+@export_range(0.0, 1.0) var menu_amount := 0.0:
+	set(v):
+		menu_amount = v
+		_sp(&"menu_amount", v)
+
+
+## Points this cloud's atoms at a menu (see AtomMenu). `menu_world` places
+## the menu in the world; `hover` is a menu-space rect to highlight.
+func set_menu(menu: AtomMenu, menu_world: Transform3D, hover := Rect2()) -> void:
+	_sp(&"menu_pos_tex", menu.pos_tex)
+	_sp(&"menu_col_tex", menu.col_tex)
+	_sp(&"menu_count", menu.count)
+	_sp(&"menu_tex_width", AtomMenu.TEX_WIDTH)
+	_sp(&"menu_xform", Projection(global_transform.affine_inverse() * menu_world))
+	_sp(&"menu_hover", Vector4(hover.position.x, hover.position.y, hover.end.x, hover.end.y))
+
+
 ## Below 1 the cloud thins out evenly, atom by atom, until at 0 nothing of it
 ## is drawn in the view; its shadow stays. For letting a camera move into a
 ## model (e.g. into a first-person body).

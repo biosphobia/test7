@@ -138,6 +138,14 @@ uniform vec2 gather_window = vec2(0.0, 1.0); // this cloud's share of the build 
 uniform int gather_mode = 0;              // 0 rained in from above, 1 straight from the cloud, 2 grown from the ground
 uniform float gather_floor = 0.0;         // ground height, local space (mode 2)
 uniform float gather_color_at = 0.8;       // progress (0..1) at which colour starts to come in
+// Menu: every drawn atom flies to a point of a menu shape (see AtomMenu).
+uniform float menu_amount = 0.0;          // 0 = in place, 1 = in the menu
+uniform sampler2D menu_pos_tex : filter_nearest, repeat_disable;
+uniform sampler2D menu_col_tex : filter_nearest, repeat_disable;
+uniform int menu_count = 1;
+uniform int menu_tex_width = 512;
+uniform mat4 menu_xform;                  // menu space -> this cloud's local space
+uniform vec4 menu_hover = vec4(0.0);      // menu-space rect (min xy, max xy) to highlight
 uniform float view_fade = 1.0;            // 1 = fully there, 0 = invisible in the view (shadow stays)
 uniform float gather_flat = 0.22;         // blast: 0 = a flat ring, 2 = roughly a sphere
 uniform vec3 gather_eye = vec3(0.0);      // world: the build starts farthest from here
@@ -806,6 +814,33 @@ void vertex() {
 		// The ball glows a little (warm), more when it is disturbed.
 		float heat = gather_heat * (1.0 - smoothstep(0.0, 0.05, x));
 		glow += heat * 0.15;
+	}
+
+	// --- menu: the atom leaves its place for a point of the menu
+	if (menu_amount > 0.0 && !cull) {
+		uint mk = pcg_hash(uid * 2654435761u + 97u);
+		int mi = int(mk % uint(max(menu_count, 1)));
+		ivec2 mt = ivec2(mi % menu_tex_width, mi / menu_tex_width);
+		vec3 mpos = texelFetch(menu_pos_tex, mt, 0).xyz;
+		vec3 mcol = texelFetch(menu_col_tex, mt, 0).rgb;
+		if (mpos.x > menu_hover.x && mpos.y > menu_hover.y && mpos.x < menu_hover.z && mpos.y < menu_hover.w) {
+			mcol = mix(mcol, vec3(1.0), 0.35); // the button under the pointer lights up
+		}
+		mpos += rand_dir(mk + 3u) * 0.004;
+		// Each atom leaves at its own moment and sweeps in on an arc.
+		float mu = clamp((menu_amount - 0.35 * hash01(mk + 11u)) / 0.65, 0.0, 1.0);
+		float me = mu * mu * mu * (mu * (mu * 6.0 - 15.0) + 10.0);
+		vec3 place = p;
+		vec3 target = (menu_xform * vec4(mpos, 1.0)).xyz;
+		vec3 toward = normalize(mat3(menu_xform) * vec3(0.0, 0.0, 1.0));
+		vec3 side = normalize(cross(toward, target - place) + vec3(1e-6));
+		float arc = sin(me * PI);
+		p = mix(place, target, me) + side * arc * (0.2 + 0.8 * hash01(mk + 17u)) * 0.7
+				+ toward * arc * 0.25 * hash01(mk + 19u);
+		disp = max(disp, distance(p, place));
+		fly = max(fly, me);
+		c = vec4(mix(c.rgb, mcol, me), c.a * (1.0 - me));
+		n = normalize(mix(n, toward, me) + vec3(1e-6));
 	}
 
 	if (cull) {
