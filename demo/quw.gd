@@ -113,12 +113,12 @@ func _ready() -> void:
 	body.morph_finished.connect(_on_morph_finished)
 	_pump_home = _pivot_r.position
 	_flash = PointCloud.new()
-	_flash.data = PointSampler.sphere(0.022, 2500, {"color": Color(1.0, 0.9, 0.6)})
+	_flash.data = PointSampler.sphere(0.016, 1200, {"color": Color(1.0, 0.9, 0.6)})
 	_flash.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	_flash.lod = false
 	_flash.unshaded = true
-	_flash.atom_min_px = 3.0
-	_flash.atom_max_px = 6.0
+	_flash.atom_min_px = 2.0
+	_flash.atom_max_px = 3.0
 	_flash.visible = false
 	add_child(_flash)
 	_light = OmniLight3D.new()
@@ -264,12 +264,12 @@ func _process(delta: float) -> void:
 	_kick = lerpf(_kick, 0.0, 1.0 - exp(-7.0 * delta))
 	# Muzzle flash: a burst of atoms and a hard flare of light, gone in a blink.
 	_flash_t += delta
-	var fl := clampf(1.0 - _flash_t / 0.11, 0.0, 1.0)
+	var fl := clampf(1.0 - _flash_t / 0.08, 0.0, 1.0)
 	_flash.visible = fl > 0.0
 	if fl > 0.0:
 		_flash.position = Vector3(0, 0.03, -0.5) + GUN_OFFSET
 		_flash.explode_center = Vector3.ZERO
-		_flash.explode = 0.1 * (1.0 - fl * fl)
+		_flash.explode = 0.035 * (1.0 - fl * fl)
 	# The pump slides back along the barrel and forward again.
 	_pivot_r.position = _pump_home + Vector3(0, 0, 0.085) * sin(_pump * PI)
 	# The shot kicks the view up; it settles back by itself.

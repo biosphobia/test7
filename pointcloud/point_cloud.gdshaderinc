@@ -167,6 +167,8 @@ uniform float debris_bounce = 0.3;
 uniform float debris_friction = 0.4;
 uniform float debris_drag = 0.0;
 uniform float debris_glow = 1.0;
+uniform float debris_clump = 0.0;          // 0 = every atom its own way, 1 = flies in chunks
+uniform float debris_clump_size = 0.06;    // size of a chunk, local units
 uniform float heal : hint_range(0.0, 1.0) = 0.0;
 uniform bool has_debris = false;  // skip the state lookup until something was carved
 
@@ -450,6 +452,7 @@ void vertex() {
 	float fly = 0.0; // how much this dot is "in flight" (0 = on the surface)
 	float disp = 0.0; // how far effects have carried it from its place
 	float wall_lit = 0.0; // hole walls: share of the colour that is self-lit
+	float chunky = 0.0;   // debris flying as a chunk keeps its full size: a solid crumb, not specks
 	float gather_cap = 4096.0; // pixel-size limit while being built (singularity)
 	bool at_rest = still && !use_skin;
 	vec4 st = vec4(-1.0);
@@ -679,6 +682,21 @@ void vertex() {
 			float life = debris_lifetime > 0.0 ? clamp(dt / debris_lifetime, 0.0, 1.0) : 0.0;
 			// Dots of one point share its velocity but scatter a little.
 			vec3 vel = st.yzw + rand_dir(uid * 13u + 9u) * length(st.yzw) * 0.35 * (sub > 0 ? 1.0 : 0.0);
+			if (debris_clump > 0.0) {
+				// Chunks: atoms from the same little block of the model that set
+				// off in roughly the same direction share one velocity, so they
+				// fly, bounce and land together as a crumb instead of as dust.
+				vec3 cell = floor(rest / debris_clump_size);
+				uint ck = pcg_hash(uint(int(cell.x) + 512) * 73856093u ^ uint(int(cell.y) + 512) * 19349663u ^ uint(int(cell.z) + 512) * 83492791u);
+				float len = max(length(st.yzw), 1e-4);
+				vec3 qdir = normalize(floor(st.yzw / len * 2.0 + 0.5) + vec3(1e-4));
+				vec3 chunk = qdir * exp2(floor(log2(len) * 2.0 + 0.5) / 2.0) * (0.75 + 0.5 * hash01(ck));
+				vel = mix(vel, chunk, debris_clump);
+				chunky = debris_clump;
+				if (debris_clump > 0.5) {
+					uid = ck; // one bounce and resting height per chunk
+				}
+			}
 			vec3 off = debris_path(p, vel, dt, uid);
 			p += off * (1.0 - heal);
 			size_scale *= mix(1.0 - life * life, 1.0, heal);
@@ -1034,6 +1052,9 @@ void vertex() {
 	// (...except where they line a hole: there they are the surface, and draw
 	// at full size so the inside of a solid object is solid, not see-through.)
 	float loose = (on_surface || st.x < -1.0) ? max(smoothstep(0.0, agap * 2.0, disp), fly) : 1.0;
+	// (Chunk debris is drawn a little bigger than a loose speck, so the atoms
+	// of one chunk close up into a crumb, but never as big blobs.)
+	float chunk_px = 5.0;
 	// Depth: a loose atom nearer the viewer than the middle of its cloud is
 	// drawn bigger and brighter, one further away smaller and dimmer
 	// (exaggerated by atom_depth), so a burst reads as a volume, not a flat
@@ -1048,6 +1069,7 @@ void vertex() {
 	// nothing changes at the moment it lands.
 	loose_px = mix(loose_px, target_px * cover, smoothstep(0.35, 1.0, morph_t));
 	c.rgb *= mix(1.0, clamp(sqrt(nearness), 0.5, 1.0), shadow_pass ? 0.0 : loose * (1.0 - smoothstep(0.35, 1.0, morph_t)));
+	loose_px = mix(loose_px, max(loose_px, chunk_px), chunky);
 	float px_cap = mix(max_pixel_size, loose_px, shadow_pass ? 0.0 : loose);
 	px_cap = shadow_pass ? px_cap : min(px_cap, gather_cap);
 	if (!shadow_pass) {

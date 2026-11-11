@@ -667,7 +667,7 @@ func _free_bullet() -> Dictionary:
 
 func _bullet_data() -> PointCloudData:
 	if not has_meta("bullet_data"):
-		set_meta("bullet_data", PointSampler.sphere(0.05, 1500, {"color": Color(1.0, 0.82, 0.35)}))
+		set_meta("bullet_data", PointSampler.sphere(0.035, 500, {"color": Color(1.0, 0.82, 0.35)}))
 	return get_meta("bullet_data")
 
 
@@ -689,32 +689,32 @@ func _update_bullets(delta: float) -> void:
 				_apply_hit(b["target"], b["body"], b["to"], dir, b.get("power", 1.0))
 			b["dur"] = -1.0
 			var tw := cloud.create_tween()
-			tw.tween_property(cloud, "explode", 0.22, 0.18).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+			tw.tween_property(cloud, "explode", 0.1, 0.12).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
 			tw.tween_callback(func():
 				cloud.visible = false
 				b["busy"] = false)
 
 
 func _apply_hit(cloud: PointCloud, body: CollisionObject3D, hit: Vector3, dir: Vector3, power := 1.0) -> void:
-	# For elements with real physics, the blast is centred a little inside the
-	# surface, so the chips are thrown back out towards the shooter.
-	var physical := cloud.element != null and cloud.element.lands
-	var kick := -dir * 1.1 if physical else Vector3.ZERO
-	var inset := dir * 0.12 if physical else Vector3.ZERO
-	# The main blast...
-	# (Thrown hard enough to burst out of the hole, not across the room.)
-	var force := 1.3 * power
-	cloud.carve(hit + inset, 0.3 * power, force, 0.35, kick)
-	# ...and a scatter of pellets around it: wide and light from afar, a tight
-	# ragged crater up close.
-	var side := dir.cross(Vector3.UP).normalized() if absf(dir.y) < 0.95 else Vector3.RIGHT
-	var up := side.cross(dir)
-	for i in 3:
-		var a := TAU * (i + randf()) / 3.0
-		var off := (side * cos(a) + up * sin(a)) * (0.2 + 0.18 * randf()) * (2.25 - power)
-		cloud.carve(hit + inset + off, 0.14 * power, force * 0.85, 0.5, kick)
-	if not physical:
-		cloud.impact(hit, 0.1 * power, 5.0, 0.3, 3.0)  # stone doesn't ripple
+	# Only atoms of an element that breaks (stone) are knocked loose by a shot.
+	# Everything else just ripples lightly where it was hit.
+	var breaks := cloud.element != null and cloud.element.lands
+	if breaks:
+		# The blast is centred a little inside the surface, so the chips are
+		# thrown back out towards the shooter: a main blast and a scatter of
+		# pellets around it, wide and light from afar, tight up close.
+		var kick := -dir * 1.1
+		var inset := dir * 0.12
+		var force := 1.3 * power
+		cloud.carve(hit + inset, 0.3 * power, force, 0.35, kick)
+		var side := dir.cross(Vector3.UP).normalized() if absf(dir.y) < 0.95 else Vector3.RIGHT
+		var up := side.cross(dir)
+		for i in 3:
+			var a := TAU * (i + randf()) / 3.0
+			var off := (side * cos(a) + up * sin(a)) * (0.2 + 0.18 * randf()) * (2.25 - power)
+			cloud.carve(hit + inset + off, 0.14 * power, force * 0.85, 0.5, kick)
+	else:
+		cloud.impact(hit, 0.035 * power, 5.0, 0.3, 4.0)
 	# Close-range hits jolt the view.
 	_hit_shake = maxf(_hit_shake, 0.03 * (power - 0.9))
 	if is_instance_valid(body) and body.has_meta("on_hit"):

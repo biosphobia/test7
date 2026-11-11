@@ -848,6 +848,8 @@ func _apply_element() -> void:
 	_sp(&"debris_friction", e.friction if e else 0.4)
 	_sp(&"debris_drag", e.drag if e else 0.0)
 	_sp(&"debris_glow", e.glow if e else 1.0)
+	_sp(&"debris_clump", e.clump if e else 0.0)
+	_sp(&"debris_clump_size", e.clump_size if e else 0.06)
 	_sp(&"debris_lifetime", e.lifetime if e else debris_lifetime)
 	_sp(&"debris_gravity", Vector3(0, -e.gravity, 0) if e else debris_gravity)
 	if is_inside_tree():

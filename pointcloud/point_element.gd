@@ -27,6 +27,11 @@ extends Resource
 @export var glow := 1.0
 ## Resistance to being chipped: hits make craters this many times smaller.
 @export var hardness := 1.0
+## 0..1: how much loose atoms hold together. 0 = each flies its own way (dust);
+## near 1 = they break off as chunks of about clump_size that fly, bounce and
+## land as one.
+@export_range(0.0, 1.0) var clump := 0.0
+@export var clump_size := 0.06
 ## How violently atoms fly from a hit (multiplies the hit's force).
 @export var scatter := 1.0
 
@@ -40,6 +45,8 @@ static func ember() -> PointElement:
 static func stone() -> PointElement:
 	var e := PointElement.new()
 	e.name = "Stone"
+	e.clump = 0.85
+	e.clump_size = 0.09
 	e.gravity = 9.8
 	e.lifetime = 0.0
 	e.lands = true
@@ -47,7 +54,7 @@ static func stone() -> PointElement:
 	e.friction = 0.45
 	e.glow = 0.0
 	e.hardness = 1.15
-	e.scatter = 1.9
+	e.scatter = 1.15
 	return e
 
 
