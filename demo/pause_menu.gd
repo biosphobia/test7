@@ -21,6 +21,7 @@ var _clouds: Array[PointCloud] = []
 var _tween: Tween
 var _time := 0.0
 var _lean := Vector2.ZERO
+var _spiral := 0.0
 var _light: OmniLight3D
 
 
@@ -120,6 +121,8 @@ func _process(delta: float) -> void:
 		_light.light_energy = 0.0
 		return
 	_time += delta
+	# Arcs on the way in, a spiral on the way out (blended if reversed mid-way).
+	_spiral = move_toward(_spiral, 0.0 if open else 1.0, delta * (5.0 if amount > 0.0 and amount < 1.0 else 1000.0))
 	var cam: Camera3D = main.player.camera
 	# Parallax: the menu leans and slides a little against the pointer, so its
 	# layers (back panel, slabs, lettering) shift against each other.
@@ -135,6 +138,7 @@ func _process(delta: float) -> void:
 			hover = menu.buttons[id]
 	for cloud in _clouds:
 		if is_instance_valid(cloud):
+			cloud.menu_spiral = _spiral
 			cloud.set_menu(menu, menu_world, hover, _time)
 			cloud.menu_amount = amount
 	# A light of its own, up and to the left of the viewer, so the menu's

@@ -147,6 +147,7 @@ uniform float menu_time = 0.0;             // keeps running while the game is pa
 uniform vec3 menu_up = vec3(0.0, 1.0, 0.0); // world up, in local space
 uniform vec3 menu_sky_top = vec3(0.004, 0.006, 0.018); // sky colours (linear), for dust
 uniform vec3 menu_sky_low = vec3(0.084, 0.055, 0.107);
+uniform float menu_spiral = 0.0;           // 0 = arc path (opening), 1 = spiral path (closing)
 uniform float menu_dust_share = 0.003;
 uniform float menu_sky_gain = 3.5;         // the sky is drawn brighter than a surface of the same colour
 uniform float menu_dust_opacity = 1.0;     // fraction of atoms left drifting as dust
@@ -851,7 +852,8 @@ void vertex() {
 		// together: each object is drawn off in ribbons, not all at once.
 		float far = clamp(distance(place, menu_xform[3].xyz) / 22.0, 0.0, 1.0);
 		float clump = 0.5 + 0.5 * flow(place * 0.9, 0.0).x;
-		float mu = clamp((menu_amount - 0.36 * far - 0.04 * clump - 0.02 * hash01(mk + 11u)) / 0.58, 0.0, 1.0);
+		float mu = clamp((menu_amount - mix(0.3, 0.36, menu_spiral) * far - mix(0.12, 0.04, menu_spiral) * clump
+				- mix(0.05, 0.02, menu_spiral) * hash01(mk + 11u)) / mix(0.5, 0.58, menu_spiral), 0.0, 1.0);
 		float me = mu * mu * mu * (mu * (mu * 6.0 - 15.0) + 10.0);
 		if (hash01(mk + 23u) < menu_dust_share) {
 			// Dust: a few atoms never join. They spread evenly through the empty
@@ -879,19 +881,23 @@ void vertex() {
 			menu_lit = me; // entirely self-coloured
 			disp = max(disp, 1.0 * me);
 		} else {
-			// Sucked in: the atom is drawn towards the menu along a spiral, one
-			// full turn around the menu's axis, turning faster as it closes in
-			// (and, played backwards, it is spat out along the same spiral).
+			// Into the menu: a wide arc through the scene, out to one side and
+			// towards the viewer, in a ribbon with its neighbours.
+			vec3 side = normalize(cross(toward, target - place) + vec3(1e-6));
+			float arc = sin(me * PI);
+			float span = distance(place, target);
+			vec3 p_arc = mix(place, target, me) + side * arc * span * 0.22 * (0.4 + 0.6 * clump)
+					+ toward * arc * span * 0.12 * hash01(mk + 19u)
+					+ flow(place * 0.5 + clump * 3.0, menu_time * 0.4) * arc * 0.25;
+			// Out of the menu (menu_spiral = 1): spat out along a spiral, one
+			// turn about the menu's axis, fast near the menu and unwinding
+			// gently as each atom nears its place.
 			vec3 centre = menu_xform[3].xyz;
 			vec3 rel = mix(place, target, me) - centre;
-			float ang = TAU * me * me;
-			vec3 spin_axis = toward;
-			rel = rel * cos(ang) + cross(spin_axis, rel) * sin(ang) + spin_axis * dot(spin_axis, rel) * (1.0 - cos(ang));
-			// ...through a narrowing throat in front of the menu.
-			float throat = sin(me * PI);
-			rel -= (rel - spin_axis * dot(spin_axis, rel)) * 0.35 * throat;
-			p = centre + rel + toward * throat * 0.5;
-			float arc = throat;
+			float ang = TAU * me * me * me;
+			rel = rel * cos(ang) + cross(toward, rel) * sin(ang) + toward * dot(toward, rel) * (1.0 - cos(ang));
+			vec3 p_spiral = centre + rel + toward * arc * 0.3;
+			p = mix(p_arc, p_spiral, menu_spiral);
 			menu_e = me;
 			menu_lit = smoothstep(0.6, 1.0, me); // landed atoms show their own colour only: an even, clean surface (the slabs' darker sides give the depth)
 			// In flight it is a free, self-lit speck; once landed it is part of
