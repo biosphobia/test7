@@ -7,7 +7,7 @@ extends Node
 ## This node keeps running while everything else is paused.
 
 const OPEN_TIME := 0.9
-const CLOSE_TIME := 1.3
+const CLOSE_TIME := 1.5
 const DISTANCE := 2.0
 
 var main: Node3D           # demo/main.gd
@@ -97,7 +97,7 @@ func set_open(on: bool) -> void:
 	if on:
 		_tween.tween_property(self, "amount", 1.0, OPEN_TIME * span).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
 	else:
-		_tween.tween_property(self, "amount", 0.0, CLOSE_TIME * span).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+		_tween.tween_property(self, "amount", 0.0, CLOSE_TIME * span).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
 	if not on:
 		get_tree().paused = false
 		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED

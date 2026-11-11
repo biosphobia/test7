@@ -852,8 +852,8 @@ void vertex() {
 		// together: each object is drawn off in ribbons, not all at once.
 		float far = clamp(distance(place, menu_xform[3].xyz) / 22.0, 0.0, 1.0);
 		float clump = 0.5 + 0.5 * flow(place * 0.9, 0.0).x;
-		float mu = clamp((menu_amount - mix(0.3, 0.36, menu_spiral) * far - mix(0.12, 0.04, menu_spiral) * clump
-				- mix(0.05, 0.02, menu_spiral) * hash01(mk + 11u)) / mix(0.5, 0.58, menu_spiral), 0.0, 1.0);
+		float mu = clamp((menu_amount - mix(0.3, 0.46, menu_spiral) * far - mix(0.12, 0.04, menu_spiral) * clump
+				- mix(0.05, 0.02, menu_spiral) * hash01(mk + 11u)) / mix(0.5, 0.48, menu_spiral), 0.0, 1.0);
 		float me = mu * mu * mu * (mu * (mu * 6.0 - 15.0) + 10.0);
 		if (hash01(mk + 23u) < menu_dust_share) {
 			// Dust: a few atoms never join. They spread evenly through the empty
@@ -894,9 +894,10 @@ void vertex() {
 			// gently as each atom nears its place.
 			vec3 centre = menu_xform[3].xyz;
 			vec3 rel = mix(place, target, me) - centre;
-			float ang = TAU * me * me * me;
+			// (A slight twist only, greatest mid-way and gone at both ends.)
+			float ang = 1.1 * sin(me * PI) * me;
 			rel = rel * cos(ang) + cross(toward, rel) * sin(ang) + toward * dot(toward, rel) * (1.0 - cos(ang));
-			vec3 p_spiral = centre + rel + toward * arc * 0.3;
+			vec3 p_spiral = centre + rel - toward * arc * 0.25; // leaves behind the menu, not across its face
 			p = mix(p_arc, p_spiral, menu_spiral);
 			menu_e = me;
 			menu_lit = smoothstep(0.6, 1.0, me); // landed atoms show their own colour only: an even, clean surface (the slabs' darker sides give the depth)
@@ -904,7 +905,10 @@ void vertex() {
 			// a surface again and is lit by the menu's own shape.
 			disp = max(disp, max(min(distance(p, place), distance(p, target)), 1e-6));
 			fly = max(fly, arc);
-			c = vec4(mix(c.rgb, mcol, smoothstep(0.35, 1.0, me)), c.a * (1.0 - me));
+			// (On the way out an atom drops the menu's colour and size almost at
+			// once, so what streams away is fine and already in the world's colours.)
+			c = vec4(mix(c.rgb, mcol, smoothstep(mix(0.35, 0.8, menu_spiral), 1.0, me)), c.a * (1.0 - me));
+			menu_size *= mix(1.0, mix(0.4, 1.0, smoothstep(0.82, 1.0, me)), menu_spiral);
 			n = normalize(mix(n, mat3(menu_xform) * mnrm, me) + vec3(1e-6));
 		}
 	}
