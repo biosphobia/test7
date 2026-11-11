@@ -121,7 +121,8 @@ func _add_cloud(parent: Node3D, fairy: PointCloudData, gun: PointCloudData) -> P
 	c.morph_arc = 0.035      # width of the spiral her atoms travel along
 	c.atom_min_px = 5.0
 	c.atom_max_px = 7.0
-	c.morph_vortex = 0.075   # she dissolves into a whirling cloud first
+	c.morph_vortex = 0.085   # she dissolves into a whirling cloud first
+	c.morph_linear = true    # ...at once, no slow wind-up
 	# She reassembles: her atoms stream into the tool, which grows outwards
 	# from where she is; going back, the far ends leave first.
 	c.morph_stream = true
@@ -225,29 +226,40 @@ func _process(delta: float) -> void:
 	_time += delta
 	_fire_cd -= delta
 	_kick = lerpf(_kick, 0.0, 1.0 - exp(-9.0 * delta))
-	# --- the switch: she gathers herself (a quick swell), dissolves into a
-	# whirling cloud of atoms, and the cloud settles into the tool, which
-	# grows outwards from where she was. Back again the same way, ending in a
-	# little pop as she comes together.
+	# --- the switch: she bursts into a whirling cloud of atoms with a flash,
+	# the cloud lunges, and it settles into the tool as the tool swings into
+	# the hand. Back again: the gun bursts, the cloud twirls once around as it
+	# gathers, and she pops up out of it.
 	var m := body.morph if busy else 0.0
 	var to_gun := tool == Tool.SHOTGUN
 	var fairy := 0.0 if to_gun else 1.0   # how much she behaves like a fairy
-	var swell := 0.0
+	var move := Vector3.ZERO   # extra movement during the switch
+	var turn := Vector3.ZERO
+	var flash := 0.0
 	if busy:
+		flash = exp(-m * 14.0)   # a burst of light as she lets go
 		if to_gun:
-			fairy = 1.0 - smoothstep(0.0, 0.25, m)
-			swell = sin(clampf(m / 0.1, 0.0, 1.0) * PI)
+			fairy = 1.0 - smoothstep(0.0, 0.2, m)
+			# The cloud lunges up and forward, then the gun swings down into
+			# the hand and snaps home with a little overshoot.
+			move = Vector3(0.0, 0.06, -0.1) * sin(clampf(m / 0.5, 0.0, 1.0) * PI)
+			var k := clampf((m - 0.5) / 0.5, 0.0, 1.0) - 1.0
+			var away := -(2.7 * k * k * k + 1.7 * k * k) * smoothstep(0.0, 0.3, m)   # 1 -> 0, overshooting
+			turn = Vector3(0.55, -0.25, 0.9) * away
+			move += Vector3(0.05, 0.05, 0.08) * away
 		else:
 			fairy = smoothstep(0.75, 1.0, m)
-			swell = sin(clampf((m - 0.86) / 0.14, 0.0, 1.0) * PI)
-	scale = Vector3.ONE * (1.0 + 0.2 * swell)
+			# The cloud twirls once around as it gathers, and she pops up out
+			# of it and drops back to her spot.
+			turn = Vector3(0.0, TAU * (1.0 - smoothstep(0.05, 0.9, m)), 0.0)
+			move = Vector3(0.0, 0.08, 0.0) * sin(clampf((m - 0.45) / 0.55, 0.0, 1.0) * PI)
 	_gun = 1.0 - fairy
 	# Hover and bob as a fairy; held steady as a gun.
 	var bob := Vector3(sin(_time * 1.3) * 0.012, sin(_time * 2.1) * 0.02, 0.0) * fairy
-	position = HOME + bob + Vector3(0, 0.01, 0.06) * _kick
+	position = HOME + bob + Vector3(0, 0.01, 0.06) * _kick + move
 	# Reload: the gun tilts over and dips, then comes back.
 	var r := sin(_reload * PI)
-	rotation = Vector3(0.12 * _kick - 0.18 * r, 0.05 * r, 0.3 * r)
+	rotation = Vector3(0.12 * _kick - 0.18 * r, 0.05 * r, 0.3 * r) + turn
 	# Wings flap as a fairy and fold flat into the gun.
 	# (Not mid-switch: the wings' atoms are busy, and their pivots must hold still.)
 	var flap := (0.35 + 0.55 * sin(_time * 15.0)) * (0.0 if busy else fairy)
@@ -261,7 +273,7 @@ func _process(delta: float) -> void:
 	_blink = maxf(_blink - delta * 7.0, 0.0)
 	_eye_node.scale.y = lerpf(1.0, 0.12, sin(_blink * PI) * fairy)
 	# (dimmer while her atoms are loose: a bright cloud would wash out to white)
-	var calm := 1.0
+	var calm := 1.0 + 1.2 * flash
 	body.emission_strength = lerpf(0.9, 0.12, _form) * calm
 	wing_l.emission_strength = lerpf(0.35, 0.1, _form) * calm
 	wing_r.emission_strength = wing_l.emission_strength

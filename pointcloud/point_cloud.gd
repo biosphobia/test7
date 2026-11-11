@@ -402,6 +402,9 @@ enum GatherMode {
 	set(v):
 		morph_vortex = v
 		_sp(&"morph_vortex", v)
+## Run the morph at constant speed instead of easing in and out (the
+## shader's own per-atom easing still applies): it starts at once.
+@export var morph_linear := false
 ## Stream timing as fractions of the morph: x = delay before the first atom
 ## leaves, y = spread of departures, z = length of each atom's trip.
 @export var morph_timing := Vector3(0.0, 0.62, 0.33):
@@ -1059,7 +1062,7 @@ func _start_queued_morph() -> void:
 		_set_custom_aabb(data.aabb.merge(_tgt.data.aabb))
 	morph = 0.0
 	_morph_tween = create_tween()
-	_morph_tween.tween_property(self, "morph", 1.0, duration).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
+	_morph_tween.tween_property(self, "morph", 1.0, duration).set_trans(Tween.TRANS_LINEAR if morph_linear else Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
 	_morph_tween.tween_callback(_finish_morph)
 	morph_started.emit()
 
