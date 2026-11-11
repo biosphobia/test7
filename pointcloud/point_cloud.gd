@@ -395,6 +395,23 @@ enum GatherMode {
 	set(v):
 		morph_reverse = v
 		_sp(&"morph_reverse", v)
+## Stream timing as fractions of the morph: x = delay before the first atom
+## leaves, y = spread of departures, z = length of each atom's trip.
+@export var morph_timing := Vector3(0.0, 0.62, 0.33):
+	set(v):
+		morph_timing = v
+		_sp(&"morph_timing", v)
+
+
+## Stream morphs: moves (offset, local space) and scales (about center) the
+## end of the morph whose atoms are not in flight: the old shape while it is
+## being used up, or with morph_reverse the new shape while it gathers. Lets
+## a character carry itself around while it turns into something.
+func set_morph_carry(offset: Vector3, scale := 1.0, center := Vector3.ZERO) -> void:
+	_sp(&"morph_carry", Vector4(offset.x, offset.y, offset.z, scale))
+	_sp(&"morph_carry_center", center)
+
+
 ## Cap (world units) on how far a morph's burst throws the atoms. By default
 ## it scales with the model's size.
 @export var morph_reach_max := 1000000.0:
@@ -551,7 +568,7 @@ func _init() -> void:
 			&"wobble_amplitude", &"wobble_frequency", &"wobble_speed", &"explode", &"explode_center",
 			&"dissolve", &"dissolve_direction", &"dissolve_directional", &"dissolve_spread",
 			&"dissolve_drift", &"dissolve_edge_color", &"glow_strength", &"morph", &"morph_stagger",
-			&"morph_arc", &"debris_lifetime", &"debris_gravity", &"beads", &"square", &"morph_swarm", &"morph_stream", &"morph_focus", &"morph_span", &"morph_reverse", &"morph_reach_max", &"morph_flash", &"atom_min_px", &"atom_max_px", &"atom_depth", &"bead_overlap", &"splats", &"clip_to_bounds", &"texture_tile", &"texture_offset"]:
+			&"morph_arc", &"debris_lifetime", &"debris_gravity", &"beads", &"square", &"morph_swarm", &"morph_timing", &"morph_stream", &"morph_focus", &"morph_span", &"morph_reverse", &"morph_reach_max", &"morph_flash", &"atom_min_px", &"atom_max_px", &"atom_depth", &"bead_overlap", &"splats", &"clip_to_bounds", &"texture_tile", &"texture_offset"]:
 		_sp(p, get(p))
 	_apply_element()
 

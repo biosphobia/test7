@@ -84,6 +84,9 @@ uniform float morph_swarm = 0.7;
 uniform bool morph_stream = false;         // reassemble as a stream instead of burst-and-swarm
 uniform vec3 morph_focus = vec3(0.0);      // stream: point the new shape grows out from (local)
 uniform float morph_span = 1.0;            // stream: distance from the focus to the farthest atom
+uniform vec3 morph_timing = vec3(0.0, 0.62, 0.33); // stream: delay, spread of departures, length of each trip (fractions of the morph)
+uniform vec4 morph_carry = vec4(0.0, 0.0, 0.0, 1.0); // stream: offset (xyz) and scale (w) of the held end
+uniform vec3 morph_carry_center = vec3(0.0);
 uniform bool morph_reverse = false;        // stream: far end first (the shape draws back in)
 uniform float morph_reach_max = 1000000.0; // cap on how far the burst throws atoms
 uniform float morph_flash = 0.0;           // atoms whiten mid-morph by this much (0..1)
@@ -529,8 +532,19 @@ void vertex() {
 			// shape draws back in). Each atom glides along a gentle spiral
 			// from its old place to its new one, turning colour on the way.
 			float far = clamp(distance(morph_reverse ? from : tp, morph_focus) / max(morph_span, 1e-4), 0.0, 1.0);
-			float when = (morph_reverse ? 1.0 - far : far) * 0.62 + 0.05 * seed;
-			float u = clamp((morph - when) / 0.33, 0.0, 1.0);
+			float when = morph_timing.x + (morph_reverse ? 1.0 - far : far) * morph_timing.y + 0.03 * seed;
+			float u = clamp((morph - when) / morph_timing.z, 0.0, 1.0);
+			// The not-yet-used end of the model (the old shape, or reversed, the
+			// new one) can be carried about as a body: moved by morph_carry.xyz
+			// and scaled by morph_carry.w about morph_carry_center.
+			vec3 held = morph_reverse ? tp : from;
+			held = morph_carry_center + (held - morph_carry_center) * morph_carry.w + morph_carry.xyz;
+			if (morph_reverse) {
+				tp = held;
+			} else {
+				from = held;
+			}
+			disp = max(disp, 1e-6); // (not "in place": no trimming at the old bounds)
 			float e = u * u * u * (u * (u * 6.0 - 15.0) + 10.0);
 			vec3 along = normalize(tp - from + vec3(1e-6));
 			vec3 side = normalize(cross(along, vec3(0.3, 1.0, 0.2)) + vec3(1e-6));

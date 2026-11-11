@@ -16,7 +16,12 @@ const HOME := Vector3(0.36, -0.24, -0.85)      # in the camera's space
 ## Where the shotgun sits relative to her: she stays where she is and the gun
 ## is assembled around her.
 const GUN_OFFSET := Vector3(-0.09, -0.01, 0.23)
-const MORPH_TIME := 1.7
+const MORPH_TIME := 1.9
+## The two ends of the shotgun, in her space: she flies between them.
+const MUZZLE_END := Vector3(-0.09, 0.02, -0.24)
+const STOCK_END := Vector3(-0.09, -0.03, 0.56)
+const T_START := 0.14   # of the morph: she has reached the end she starts from
+const T_SWEEP := 0.5    # ...and takes this long to fly the gun's length
 const SHELLS := 6
 const RELOAD_TIME := 1.3
 const FIRE_INTERVAL := 0.45
@@ -119,7 +124,8 @@ func _add_cloud(parent: Node3D, fairy: PointCloudData, gun: PointCloudData) -> P
 	# She reassembles: her atoms stream into the tool, which grows outwards
 	# from where she is; going back, the far ends leave first.
 	c.morph_stream = true
-	c.morph_span = 0.62
+	c.morph_span = MUZZLE_END.distance_to(STOCK_END)
+	c.morph_timing = Vector3(T_START, T_SWEEP, 0.2)
 	c.morph_flash = 0.25
 	c.morph_reach_max = 0.07   # the same tight burst both ways (the gun is far bigger than she is)
 	c.atom_depth = 7.0   # near atoms big and bright, far ones small and dim
@@ -160,20 +166,18 @@ func set_tool(t: int) -> void:
 	_pending = _forms.size()
 	for c in _forms:
 		var cloud := c as PointCloud
-		# Her centre, in this cloud's own space.
-		cloud.morph_focus = cloud.to_local(global_position)
+		# The gun is laid down from the muzzle back to the stock, and gathered
+		# up from the stock out to the muzzle.
+		cloud.morph_focus = cloud.to_local(to_global(MUZZLE_END))
 		cloud.morph_reverse = t == Tool.NONE
 		cloud.morph_to(_forms[c][1 if t == Tool.SHOTGUN else 0], MORPH_TIME)
-	# She moves to the tool's position while her atoms are still a cloud, so
-	# they land on a tool that is already where it will stay.
 	create_tween().tween_property(self, "_form", 1.0 if t == Tool.SHOTGUN else 0.0, MORPH_TIME)
-	# Wings fold (or unfold) and the bobbing settles early in the switch.
-	create_tween().tween_property(self, "_gun", 1.0 if t == Tool.SHOTGUN else 0.0, MORPH_TIME * 0.3) \
-			.set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
 
 
 func _on_morph_finished() -> void:
 	busy = false
+	for c in _forms:
+		(c as PointCloud).set_morph_carry(Vector3.ZERO)
 	# Keep the other form warm for the way back.
 	for c in _forms:
 		(c as PointCloud).prepare_morph_target(_forms[c][0 if tool == Tool.SHOTGUN else 1])
@@ -220,7 +224,36 @@ func _process(delta: float) -> void:
 	_time += delta
 	_fire_cd -= delta
 	_kick = lerpf(_kick, 0.0, 1.0 - exp(-9.0 * delta))
-	var fairy := 1.0 - _gun
+	# --- the switch: she does it herself. Into the shotgun: she hops to the
+	# muzzle, then corkscrews back along the gun's length, laying it down
+	# behind her and shrinking as she spends her atoms. Back again: she gathers
+	# it up from the stock out to the muzzle, growing, and loops home.
+	var m := body.morph if busy else 0.0
+	var to_gun := tool == Tool.SHOTGUN
+	var carry := Vector3.ZERO
+	var size := 1.0
+	var fairy := 0.0 if to_gun else 1.0   # how much she behaves like a fairy
+	if busy:
+		var a := MUZZLE_END if to_gun else STOCK_END
+		var b := STOCK_END if to_gun else MUZZLE_END
+		var f := clampf((m - T_START) / T_SWEEP, 0.0, 1.0)
+		var ang := f * TAU * 2.5
+		carry = a.lerp(b, f) + Vector3(cos(ang), sin(ang), 0.0) * 0.035 * sin(f * PI)
+		if to_gun:
+			var k := smoothstep(0.0, 1.0, clampf(m / T_START, 0.0, 1.0))
+			carry = carry * k + Vector3(0.03, 0.07, 0.0) * sin(k * PI)   # a hop to the muzzle
+			size = lerpf(1.0, 0.3, f)
+			fairy = 1.0 - f
+		else:
+			var k := smoothstep(0.0, 1.0, clampf((m - 0.74) / 0.26, 0.0, 1.0))
+			carry = carry * (1.0 - k) + Vector3(-0.04, 0.09, 0.0) * sin(k * PI)   # a loop home
+			size = lerpf(lerpf(0.3, 0.85, f), 1.0, k)
+			fairy = maxf(f * 0.6, k)
+		for c in _forms:
+			var cloud := c as PointCloud
+			var inv := cloud.global_transform.basis.inverse()
+			cloud.set_morph_carry(inv * (global_transform.basis * carry), size, cloud.to_local(global_position))
+	_gun = 1.0 - fairy
 	# Hover and bob as a fairy; held steady as a gun.
 	var bob := Vector3(sin(_time * 1.3) * 0.012, sin(_time * 2.1) * 0.02, 0.0) * fairy
 	position = HOME + bob + Vector3(0, 0.01, 0.06) * _kick
@@ -228,7 +261,8 @@ func _process(delta: float) -> void:
 	var r := sin(_reload * PI)
 	rotation = Vector3(0.12 * _kick - 0.18 * r, 0.05 * r, 0.3 * r)
 	# Wings flap as a fairy and fold flat into the gun.
-	var flap := (0.35 + 0.55 * sin(_time * 15.0)) * fairy
+	# (Not mid-switch: the wings' atoms are busy, and their pivots must hold still.)
+	var flap := (0.35 + 0.55 * sin(_time * 15.0)) * (0.0 if busy else fairy)
 	_pivot_l.rotation.z = -flap
 	_pivot_r.rotation.z = flap
 	# Blink.
