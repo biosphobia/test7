@@ -148,7 +148,7 @@ uniform vec3 menu_up = vec3(0.0, 1.0, 0.0); // world up, in local space
 uniform vec3 menu_sky_top = vec3(0.004, 0.006, 0.018); // sky colours (linear), for dust
 uniform vec3 menu_sky_low = vec3(0.084, 0.055, 0.107);
 uniform float menu_dust_share = 0.003;
-uniform float menu_sky_gain = 2.1;         // the sky is drawn brighter than a surface of the same colour
+uniform float menu_sky_gain = 3.5;         // the sky is drawn brighter than a surface of the same colour
 uniform float menu_dust_opacity = 1.0;     // fraction of atoms left drifting as dust
 uniform float menu_atom_size = 0.017;      // world size of an atom on its way to, or in, a menu
 uniform int menu_count = 1;
@@ -851,7 +851,7 @@ void vertex() {
 		// together: each object is drawn off in ribbons, not all at once.
 		float far = clamp(distance(place, menu_xform[3].xyz) / 22.0, 0.0, 1.0);
 		float clump = 0.5 + 0.5 * flow(place * 0.9, 0.0).x;
-		float mu = clamp((menu_amount - 0.3 * far - 0.12 * clump - 0.05 * hash01(mk + 11u)) / 0.5, 0.0, 1.0);
+		float mu = clamp((menu_amount - 0.36 * far - 0.04 * clump - 0.02 * hash01(mk + 11u)) / 0.58, 0.0, 1.0);
 		float me = mu * mu * mu * (mu * (mu * 6.0 - 15.0) + 10.0);
 		if (hash01(mk + 23u) < menu_dust_share) {
 			// Dust: a few atoms never join. They spread evenly through the empty
@@ -872,23 +872,28 @@ void vertex() {
 			float up = smoothstep(-0.35, 0.9, wdir.y);
 			// (Gains measured against the rendered sky, which is tone-mapped
 			// differently from surfaces.)
-			vec3 sky = mix(menu_sky_low, menu_sky_top, up) * menu_sky_gain * mix(1.0, 0.2, up);
+			vec3 sky = mix(menu_sky_low, menu_sky_top, up) * menu_sky_gain;
 			float opacity = (0.03 + 0.07 * hash01(mk + 53u)) * sin(cyc * PI) * menu_dust_opacity;
 			vec3 mote = pow(mix(sky, vec3(1.0), opacity), vec3(1.0 / 2.2));
 			c = vec4(mix(c.rgb, mote, me), c.a * (1.0 - me));
 			menu_lit = me; // entirely self-coloured
 			disp = max(disp, 1.0 * me);
 		} else {
-			// A wide arc through the scene: out to one side and towards the
-			// viewer, in a ribbon with its neighbours.
-			vec3 side = normalize(cross(toward, target - place) + vec3(1e-6));
-			float arc = sin(me * PI);
-			float span = distance(place, target);
-			p = mix(place, target, me) + side * arc * span * 0.22 * (0.4 + 0.6 * clump)
-					+ toward * arc * span * 0.12 * hash01(mk + 19u)
-					+ flow(place * 0.5 + clump * 3.0, menu_time * 0.4) * arc * 0.25;
+			// Sucked in: the atom is drawn towards the menu along a spiral, one
+			// full turn around the menu's axis, turning faster as it closes in
+			// (and, played backwards, it is spat out along the same spiral).
+			vec3 centre = menu_xform[3].xyz;
+			vec3 rel = mix(place, target, me) - centre;
+			float ang = TAU * me * me;
+			vec3 spin_axis = toward;
+			rel = rel * cos(ang) + cross(spin_axis, rel) * sin(ang) + spin_axis * dot(spin_axis, rel) * (1.0 - cos(ang));
+			// ...through a narrowing throat in front of the menu.
+			float throat = sin(me * PI);
+			rel -= (rel - spin_axis * dot(spin_axis, rel)) * 0.35 * throat;
+			p = centre + rel + toward * throat * 0.5;
+			float arc = throat;
 			menu_e = me;
-			menu_lit = 0.8 * smoothstep(0.6, 1.0, me); // mostly its own colour: an even, clean surface
+			menu_lit = smoothstep(0.6, 1.0, me); // landed atoms show their own colour only: an even, clean surface (the slabs' darker sides give the depth)
 			// In flight it is a free, self-lit speck; once landed it is part of
 			// a surface again and is lit by the menu's own shape.
 			disp = max(disp, max(min(distance(p, place), distance(p, target)), 1e-6));
@@ -978,7 +983,10 @@ void vertex() {
 	if (!ortho) {
 		px /= max(-vp.z, 1e-3); // perspective
 	}
-	v_alive = size_scale > 0.02 && !(shadow_pass && menu_dust > 0.5) ? 1.0 : 0.0;
+	// (Atoms in or on their way to a menu cast no shadow: on the menu's thin
+	// layers shadows only showed as grain.)
+	bool menu_no_shadow = shadow_pass && max(menu_e, menu_dust) > 0.3;
+	v_alive = (size_scale > 0.02 && !menu_no_shadow) ? 1.0 : 0.0;
 	// On screen a resting atom is target_px * cover wide (that's what level of
 	// detail aims for). Once loose it never draws bigger than that, however
 	// close it flies to the camera or however sparse its part of the model.
@@ -1228,9 +1236,14 @@ void fragment() {
 	} else {
 		float self_lit = max(atom_glow * v_fly, v_menu);
 		ALBEDO = col * (1.0 - self_lit);
-		EMISSION = col * (emission_strength + self_lit);
+		// (Self-coloured menu atoms are driven a little harder, so they show at
+		// about the brightness a lit surface of that colour would.)
+		EMISSION = col * (emission_strength + self_lit * (v_menu > 0.0 && v_dust < 0.5 ? mix(1.0, 1.5, v_menu) : 1.0));
 	}
 	EMISSION += dissolve_edge_color.rgb * v_glow * glow_strength;
 	ROUGHNESS = roughness;
+	// Self-coloured atoms (menu, dust) take no highlights either: the sheen of
+	// a nearby light on each little atom is what read as grain.
+	SPECULAR = 0.5 * (1.0 - v_menu);
 	METALLIC = metallic;
 }

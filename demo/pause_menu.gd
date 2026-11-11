@@ -7,6 +7,7 @@ extends Node
 ## This node keeps running while everything else is paused.
 
 const OPEN_TIME := 0.9
+const CLOSE_TIME := 1.3
 const DISTANCE := 2.0
 
 var main: Node3D           # demo/main.gd
@@ -36,7 +37,7 @@ func _ready() -> void:
 
 func _build() -> AtomMenu:
 	var m := AtomMenu.new()
-	m.add_slab(Rect2(-1.15, -0.8, 2.3, 1.6), -0.28, 0.1, Color(0.1, 0.11, 0.16), 90000)   # back panel, set well back
+	m.add_slab(Rect2(-1.15, -0.8, 2.3, 1.6), -0.28, 0.1, Color(0.3, 0.32, 0.42), 150000)   # back panel, set well back
 	m.add_text("PAUSED", Vector2(0, 0.45), 0.24, 0.0, Color(0.95, 0.97, 1.0), 60000)
 	m.add_button("resume", "RESUME", Rect2(-0.55, -0.16, 1.1, 0.27), Color(0.15, 0.5, 0.75), Color.WHITE)
 	m.add_button("quit", "QUIT", Rect2(-0.55, -0.56, 1.1, 0.27), Color(0.7, 0.22, 0.25), Color.WHITE)
@@ -89,8 +90,13 @@ func set_open(on: bool) -> void:
 	# Eased at both ends, and with no dead time: the game stops the instant the
 	# menu is called and is running again the instant it is dismissed, while
 	# the atoms are still on their way home.
-	_tween.tween_property(self, "amount", 1.0 if on else 0.0, OPEN_TIME * maxf(absf((1.0 if on else 0.0) - amount), 0.3)) \
-			.set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
+	# Closing takes a little longer and settles gently: spat out fast, then
+	# every atom glides the last of the way home.
+	var span := maxf(absf((1.0 if on else 0.0) - amount), 0.3)
+	if on:
+		_tween.tween_property(self, "amount", 1.0, OPEN_TIME * span).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
+	else:
+		_tween.tween_property(self, "amount", 0.0, CLOSE_TIME * span).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
 	if not on:
 		get_tree().paused = false
 		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
@@ -120,8 +126,8 @@ func _process(delta: float) -> void:
 	var size := get_viewport().get_visible_rect().size
 	var m := (get_viewport().get_mouse_position() / size - Vector2(0.5, 0.5)) * 2.0
 	_lean = _lean.lerp(m.clamp(Vector2(-1, -1), Vector2(1, 1)) if open else Vector2.ZERO, 1.0 - exp(-6.0 * delta))
-	menu_world = _base * Transform3D(Basis.from_euler(Vector3(_lean.y * 0.1, _lean.x * 0.16, 0.0)),
-			Vector3(-_lean.x * 0.06, _lean.y * 0.04, 0.0))
+	menu_world = _base * Transform3D(Basis.from_euler(Vector3(_lean.y * 0.075, _lean.x * 0.12, 0.0)),
+			Vector3(-_lean.x * 0.045, _lean.y * 0.03, 0.0))
 	var hover := Rect2()
 	if open and amount > 0.95:
 		var id := menu.button_at(get_viewport().get_mouse_position(), cam, menu_world)
