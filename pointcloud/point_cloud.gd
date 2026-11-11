@@ -372,6 +372,18 @@ enum GatherMode {
 	set(v):
 		morph_swarm = v
 		_sp(&"morph_swarm", v)
+## 0..1: morphing atoms pass through a bright, whitened glow at the height of
+## the burst, so the old colour melts into the new one.
+## Cap (world units) on how far a morph's burst throws the atoms. By default
+## it scales with the model's size.
+@export var morph_reach_max := 1000000.0:
+	set(v):
+		morph_reach_max = v
+		_sp(&"morph_reach_max", v)
+@export_range(0.0, 1.0) var morph_flash := 0.0:
+	set(v):
+		morph_flash = v
+		_sp(&"morph_flash", v)
 ## Smallest and largest on-screen size (pixels) of an atom that has left its
 ## place. Raise the minimum for a chunkier, more visible burst.
 @export var atom_min_px := 1.5:
@@ -518,7 +530,7 @@ func _init() -> void:
 			&"wobble_amplitude", &"wobble_frequency", &"wobble_speed", &"explode", &"explode_center",
 			&"dissolve", &"dissolve_direction", &"dissolve_directional", &"dissolve_spread",
 			&"dissolve_drift", &"dissolve_edge_color", &"glow_strength", &"morph", &"morph_stagger",
-			&"morph_arc", &"debris_lifetime", &"debris_gravity", &"beads", &"square", &"morph_swarm", &"atom_min_px", &"atom_max_px", &"atom_depth", &"bead_overlap", &"splats", &"clip_to_bounds", &"texture_tile", &"texture_offset"]:
+			&"morph_arc", &"debris_lifetime", &"debris_gravity", &"beads", &"square", &"morph_swarm", &"morph_reach_max", &"morph_flash", &"atom_min_px", &"atom_max_px", &"atom_depth", &"bead_overlap", &"splats", &"clip_to_bounds", &"texture_tile", &"texture_offset"]:
 		_sp(p, get(p))
 	_apply_element()
 

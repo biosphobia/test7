@@ -16,6 +16,7 @@ var target_hit := Vector3.ZERO
 
 var quality: PointCloudQuality
 var blend_post: ColorRect
+var atom_blend: MeshInstance3D
 var _ground_tiles: Array[PointCloud] = []
 var _info: Label
 var _status: Label
@@ -305,6 +306,21 @@ func _setup_environment() -> void:
 	post.add_child(blend_post)
 	blend_post.visible = false  # off by default: it would soften the beads
 
+	# Atom blending: fills the small gaps between nearby loose atoms, so a
+	# cloud of them reads as one soft shape instead of separate dots.
+	atom_blend = MeshInstance3D.new()
+	var quad := QuadMesh.new()
+	quad.size = Vector2(2, 2)
+	atom_blend.mesh = quad
+	var blend_mat := ShaderMaterial.new()
+	blend_mat.shader = preload("res://demo/atom_blend.gdshader")
+	blend_mat.render_priority = 100
+	atom_blend.material_override = blend_mat
+	atom_blend.extra_cull_margin = 16384.0
+	atom_blend.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	add_child(atom_blend)
+	atom_blend.visible = false  # off by default (F7): a full-screen pass, for little change on dense clouds
+
 	var sun := DirectionalLight3D.new()
 	sun.rotation_degrees = Vector3(-48, -35, 0)
 	sun.light_color = Color(1.0, 0.92, 0.82)
@@ -563,6 +579,8 @@ func _unhandled_input(event: InputEvent) -> void:
 		PointCloud.default_square = not PointCloud.default_square
 		for c in get_tree().get_nodes_in_group(&"point_clouds"):
 			(c as PointCloud).square = PointCloud.default_square
+	elif event.is_action_pressed("toggle_atom_blend"):
+		atom_blend.visible = not atom_blend.visible
 	elif event.is_action_pressed("toggle_blend"):
 		blend_post.visible = not blend_post.visible
 	elif event.is_action_pressed("switch_renderer") and not OS.has_feature("editor"):
@@ -732,7 +750,7 @@ func _build_hud() -> void:
 		"[ / ] lower / raise resolution · - / = less / more detail",
 		"0 automatic detail on/off (off by default)",
 		"F9 smoothing filter on/off · F10 switch renderer (Compatibility is faster)",
-		"F8 square / round atoms · Backspace restore everything · Esc free mouse",
+		"F7 atom blending on/off · F8 square / round atoms · Backspace restore everything · Esc free mouse",
 	])
 	layer.add_child(_info)
 	_status = Label.new()
@@ -808,7 +826,7 @@ func _setup_input() -> void:
 		"explode": KEY_F, "vibrate": KEY_V, "wobble": KEY_G, "heal": KEY_H, "restore": KEY_BACKSPACE, "reload": KEY_R,
 		"detail_down": KEY_MINUS, "detail_up": KEY_EQUAL, "detail_auto": KEY_0,
 		"res_down": KEY_BRACKETLEFT, "res_up": KEY_BRACKETRIGHT,
-		"switch_renderer": KEY_F10, "toggle_blend": KEY_F9, "toggle_square": KEY_F8,
+		"switch_renderer": KEY_F10, "toggle_blend": KEY_F9, "toggle_square": KEY_F8, "toggle_atom_blend": KEY_F7,
 	}
 	for action in keys:
 		if not InputMap.has_action(action):

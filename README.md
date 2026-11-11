@@ -67,6 +67,7 @@ is seen from straight behind the player's eyes.
 | 0 | automatic detail on / off (off by default: detail never changes by itself) |
 | F10 | switch renderer: Compatibility (default, fastest) ↔ Forward+ |
 | Backspace | restore everything instantly |
+| F7 | atom blending on/off: fills small gaps between nearby loose atoms (off by default) |
 | F8 | round atoms (default) / square atoms |
 | F9 | smoothing filter on/off (edge-aware blend over the 3D view) |
 | Esc | free the mouse (click to recapture) |

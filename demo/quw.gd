@@ -111,6 +111,8 @@ func _add_cloud(parent: Node3D, fairy: PointCloudData, gun: PointCloudData) -> P
 	c.morph_arc = 0.05
 	c.atom_min_px = 5.0
 	c.atom_max_px = 6.0
+	c.morph_flash = 0.8
+	c.morph_reach_max = 0.07   # the same tight burst both ways (the gun is far bigger than she is)
 	c.atom_depth = 7.0   # near atoms big and bright, far ones small and dim
 	parent.add_child(c)
 	_forms[c] = [fairy, gun]
@@ -142,7 +144,9 @@ func set_tool(t: int) -> void:
 	for c in _forms:
 		var cloud := c as PointCloud
 		cloud.morph_to(_forms[c][1 if t == Tool.SHOTGUN else 0], MORPH_TIME)
-	create_tween().tween_property(self, "_gun", 1.0 if t == Tool.SHOTGUN else 0.0, MORPH_TIME) \
+	# She moves to the tool's position while her atoms are still a cloud, so
+	# they land on a tool that is already where it will stay.
+	create_tween().tween_property(self, "_gun", 1.0 if t == Tool.SHOTGUN else 0.0, MORPH_TIME * 0.55) \
 			.set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
 
 

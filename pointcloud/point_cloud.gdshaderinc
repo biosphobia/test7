@@ -81,6 +81,8 @@ uniform float morph_stagger : hint_range(0.0, 0.95) = 0.5;
 uniform float morph_arc = 0.3;
 // How far morphing atoms stray from the straight path while they swarm.
 uniform float morph_swarm = 0.7;
+uniform float morph_reach_max = 1000000.0; // cap on how far the burst throws atoms
+uniform float morph_flash = 0.0;           // atoms whiten mid-morph by this much (0..1)
 // Explosions: twist around the vertical axis and turbulent streams.
 uniform float explode_swirl = 0.9;
 uniform float explode_turbulence = 0.55;
@@ -504,7 +506,7 @@ void vertex() {
 		// Where this atom hangs in the cloud: pushed out from the middle, then
 		// carried around by a slowly changing flow (streams plus eddies).
 		vec3 mid = bounds_min + bounds_size * 0.5;
-		float reach = length(bounds_size) * 0.3;
+		float reach = min(length(bounds_size) * 0.3, morph_reach_max);
 		vec3 out_dir = normalize(from - mid + rand_dir(uid * 3u + 17u) * 0.6 + vec3(1e-5));
 		vec3 cloud = from + out_dir * reach * (0.35 + seed * 0.9);
 		cloud += (flow(cloud * 0.8 + grp * 3.0, cloud_time * 1.1 + grp * 6.0)
@@ -514,7 +516,13 @@ void vertex() {
 		vec3 sw = flow(tp * 0.9 + grp * 4.0, cloud_time * 1.5) * morph_swarm * 0.6 * sin(t * PI);
 		p = mix(p, tp, t) + sw;
 		disp = max(disp, min(distance(p, from), distance(p, tp)));
-		c = mix(c, tcol, t);
+		// Colour changes all the way through the flight, not only at the end:
+		// it starts to turn as the atom leaves and passes through a bright,
+		// washed-out glow at the height of the burst (morph_flash).
+		float ct = smoothstep(0.0, 1.0, clamp(0.45 * s1 + 0.55 * t, 0.0, 1.0));
+		c = mix(c, tcol, ct);
+		float hot = sin(clamp(ct, 0.0, 1.0) * PI) * s1 * morph_flash;
+		c.rgb = mix(c.rgb, vec3(1.0), 0.5 * hot);
 		n = normalize(mix(n, tn, t) + vec3(1e-6));
 		if (!beads) {
 			mat3 tshape = load_shape(target_curv_tex, tc);
