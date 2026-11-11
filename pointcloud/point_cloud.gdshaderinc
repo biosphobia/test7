@@ -1018,7 +1018,9 @@ void vertex() {
 	}
 	// (Atoms in or on their way to a menu cast no shadow: on the menu's thin
 	// layers shadows only showed as grain.)
-	bool menu_no_shadow = shadow_pass && max(menu_e, menu_dust) > 0.3;
+	// (Nor do loose atoms: a cloud of debris would speckle everything near it.)
+	bool menu_no_shadow = shadow_pass && (max(menu_e, menu_dust) > 0.3
+			|| max(smoothstep(0.0, point_spacing * lod_scale * 6.0, disp), fly) > 0.9);
 	v_alive = (size_scale > 0.02 && !menu_no_shadow) ? 1.0 : 0.0;
 	// On screen a resting atom is target_px * cover wide (that's what level of
 	// detail aims for). Once loose it never draws bigger than that, however

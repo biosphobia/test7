@@ -22,6 +22,7 @@ var _info: Label
 var _status: Label
 var _fire_cd := 0.0
 var _paint_hue := 0.0
+var _hit_shake := 0.0
 var pause_menu: PauseMenu   # Esc: made of the atoms that were on screen
 # Intro: everything starts packed into a singularity in the middle of the screen.
 enum Intro { NONE, WAIT, BANG, ENTER }
@@ -532,6 +533,9 @@ func _process(delta: float) -> void:
 		return
 	_update_target()
 	_update_bullets(delta)
+	_hit_shake = lerpf(_hit_shake, 0.0, 1.0 - exp(-10.0 * delta))
+	player.camera.h_offset = randf_range(-1.0, 1.0) * _hit_shake
+	player.camera.v_offset = randf_range(-1.0, 1.0) * _hit_shake
 	_fire_cd -= delta
 	if Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
 		# Shots come from the shotgun: Quw has to be holding that form.
@@ -640,6 +644,8 @@ func shoot() -> void:
 	b["dur"] = maxf(from.distance_to(target_hit) / BULLET_SPEED, 0.001)
 	b["target"] = target
 	b["body"] = target_body
+	# A shotgun: the closer the target, the harder and tighter it hits.
+	b["power"] = clampf(remap(from.distance_to(target_hit), 2.0, 14.0, 1.9, 0.9), 0.9, 1.9)
 
 
 func _free_bullet() -> Dictionary:
@@ -680,7 +686,7 @@ func _update_bullets(delta: float) -> void:
 			cloud.global_position = b["to"]
 			var dir := ((b["to"] as Vector3) - (b["from"] as Vector3)).normalized()
 			if is_instance_valid(b["target"]):
-				_apply_hit(b["target"], b["body"], b["to"], dir)
+				_apply_hit(b["target"], b["body"], b["to"], dir, b.get("power", 1.0))
 			b["dur"] = -1.0
 			var tw := cloud.create_tween()
 			tw.tween_property(cloud, "explode", 0.45, 0.22).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
@@ -689,13 +695,27 @@ func _update_bullets(delta: float) -> void:
 				b["busy"] = false)
 
 
-func _apply_hit(cloud: PointCloud, body: CollisionObject3D, hit: Vector3, dir: Vector3) -> void:
+func _apply_hit(cloud: PointCloud, body: CollisionObject3D, hit: Vector3, dir: Vector3, power := 1.0) -> void:
 	# For elements with real physics, the blast is centred a little inside the
 	# surface, so the chips are thrown back out towards the shooter.
 	var physical := cloud.element != null and cloud.element.lands
-	cloud.carve(hit + dir * 0.12 if physical else hit, 0.32, 2.5, 0.35, -dir * 1.1 if physical else Vector3.ZERO)
+	var kick := -dir * 1.1 if physical else Vector3.ZERO
+	var inset := dir * 0.12 if physical else Vector3.ZERO
+	# The main blast...
+	var force := 2.4 * sqrt(power)
+	cloud.carve(hit + inset, 0.3 * power, force, 0.35, kick)
+	# ...and a scatter of pellets around it: wide and light from afar, a tight
+	# ragged crater up close.
+	var side := dir.cross(Vector3.UP).normalized() if absf(dir.y) < 0.95 else Vector3.RIGHT
+	var up := side.cross(dir)
+	for i in 3:
+		var a := TAU * (i + randf()) / 3.0
+		var off := (side * cos(a) + up * sin(a)) * (0.22 + 0.2 * randf()) * (2.4 - power)
+		cloud.carve(hit + inset + off, 0.14 * power, force * 0.85, 0.5, kick)
 	if not physical:
-		cloud.impact(hit, 0.1, 5.0, 0.3, 3.0)  # stone doesn't ripple
+		cloud.impact(hit, 0.1 * power, 5.0, 0.3, 3.0)  # stone doesn't ripple
+	# Close-range hits jolt the view.
+	_hit_shake = maxf(_hit_shake, 0.012 * (power - 0.9) / 1.0)
 	if is_instance_valid(body) and body.has_meta("on_hit"):
 		body.get_meta("on_hit").call(hit)
 

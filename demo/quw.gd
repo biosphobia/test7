@@ -24,7 +24,7 @@ const T_START := 0.14   # of the morph: she has reached the end she starts from
 const T_SWEEP := 0.5    # ...and takes this long to fly the gun's length
 const SHELLS := 6
 const RELOAD_TIME := 1.3
-const FIRE_INTERVAL := 0.45
+const FIRE_INTERVAL := 0.7     # a shot, then the pump has to be worked
 
 var tool := Tool.NONE          # what she is, or is turning into
 var busy := false              # mid-morph: tools can't be switched
@@ -49,6 +49,10 @@ var _reload := 0.0             # 0..1 through the reload animation
 var _fire_cd := 0.0
 var _pending := 0
 var _light: OmniLight3D        # the glow of the switch (and a little of her own)
+var _pump := 0.0               # 0..1 through the pump stroke after a shot
+var _flash: PointCloud         # muzzle flash: a puff of white-hot atoms
+var _flash_t := 1.0
+var _pump_home := Vector3.ZERO
 var _settle := 1.0             # eases her wing-beat back in after a switch
 
 
@@ -107,6 +111,16 @@ func _ready() -> void:
 		w.emission_strength = 0.35
 	eyes.emission_strength = 0.0
 	body.morph_finished.connect(_on_morph_finished)
+	_pump_home = _pivot_r.position
+	_flash = PointCloud.new()
+	_flash.data = PointSampler.sphere(0.022, 2500, {"color": Color(1.0, 0.9, 0.6)})
+	_flash.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	_flash.lod = false
+	_flash.unshaded = true
+	_flash.atom_min_px = 3.0
+	_flash.atom_max_px = 6.0
+	_flash.visible = false
+	add_child(_flash)
 	_light = OmniLight3D.new()
 	_light.light_color = Color(0.8, 0.9, 1.0)
 	_light.omni_range = 2.2
@@ -216,6 +230,12 @@ func try_fire() -> bool:
 	shells -= 1
 	_fire_cd = FIRE_INTERVAL
 	_kick = 1.0
+	_flash_t = 0.0
+	# Work the pump: back and forward again, a moment after the shot.
+	var tw := create_tween()
+	tw.tween_interval(0.16)
+	tw.tween_property(self, "_pump", 1.0, 0.36).from(0.0)
+	tw.tween_callback(func(): _pump = 0.0)
 	if shells == 0:
 		get_tree().create_timer(0.35).timeout.connect(reload)
 	return true
@@ -241,7 +261,21 @@ func muzzle() -> Vector3:
 func _process(delta: float) -> void:
 	_time += delta
 	_fire_cd -= delta
-	_kick = lerpf(_kick, 0.0, 1.0 - exp(-9.0 * delta))
+	_kick = lerpf(_kick, 0.0, 1.0 - exp(-7.0 * delta))
+	# Muzzle flash: a burst of atoms and a hard flare of light, gone in a blink.
+	_flash_t += delta
+	var fl := clampf(1.0 - _flash_t / 0.11, 0.0, 1.0)
+	_flash.visible = fl > 0.0
+	if fl > 0.0:
+		_flash.position = Vector3(0, 0.03, -0.5) + GUN_OFFSET
+		_flash.explode_center = Vector3.ZERO
+		_flash.explode = 0.1 * (1.0 - fl * fl)
+	# The pump slides back along the barrel and forward again.
+	_pivot_r.position = _pump_home + Vector3(0, 0, 0.085) * sin(_pump * PI)
+	# The shot kicks the view up; it settles back by itself.
+	var cam := get_parent() as Camera3D
+	if cam:
+		cam.rotation.x = 0.045 * _kick
 	# --- the switch: she bursts into a whirling cloud of atoms with a flash,
 	# the cloud lunges, and it settles into the tool as the tool swings into
 	# the hand. Back again: the gun bursts, the cloud twirls once around as it
@@ -272,10 +306,10 @@ func _process(delta: float) -> void:
 	_gun = 1.0 - fairy
 	# Hover and bob as a fairy; held steady as a gun.
 	var bob := Vector3(sin(_time * 1.3) * 0.012, sin(_time * 2.1) * 0.02, 0.0) * fairy
-	position = HOME + bob + Vector3(0, 0.01, 0.06) * _kick + move
+	position = HOME + bob + Vector3(0, 0.025, 0.13) * _kick + Vector3(0, -0.01, 0.015) * sin(_pump * PI) + move
 	# Reload: the gun tilts over and dips, then comes back.
 	var r := sin(_reload * PI)
-	rotation = Vector3(0.12 * _kick - 0.18 * r, 0.05 * r, 0.3 * r) + turn
+	rotation = Vector3(0.3 * _kick - 0.18 * r - 0.05 * sin(_pump * PI), 0.05 * r, 0.3 * r + 0.06 * sin(_pump * PI)) + turn
 	# Wings flap as a fairy and fold flat into the gun.
 	# (Not mid-switch: the wings' atoms are busy, and their pivots must hold still.)
 	_settle = minf(_settle + delta * 3.0, 1.0)
@@ -296,7 +330,7 @@ func _process(delta: float) -> void:
 	# (It rises and falls smoothly, and the same soft light stays on whatever
 	# she is, so nothing changes when the switch completes.)
 	var surge := pow(sin(m * PI), 2.0) if busy else 0.0
-	_light.light_energy = 0.3 + 2.0 * surge
+	_light.light_energy = 0.3 + 2.0 * surge + 5.0 * fl
 	_light.light_color = Color(1.0, 0.93, 0.7).lerp(Color(0.75, 0.88, 1.0), surge)
 	body.emission_strength = lerpf(0.9, 0.12, _form) * calm
 	wing_l.emission_strength = lerpf(0.35, 0.1, _form) * calm
