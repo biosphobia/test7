@@ -395,6 +395,13 @@ enum GatherMode {
 	set(v):
 		morph_reverse = v
 		_sp(&"morph_reverse", v)
+## Stream morphs: above 0, the model first dissolves into a whirling cloud
+## of atoms of about this radius (world units), which then settles into the
+## new shape from the focus outwards.
+@export var morph_vortex := 0.0:
+	set(v):
+		morph_vortex = v
+		_sp(&"morph_vortex", v)
 ## Stream timing as fractions of the morph: x = delay before the first atom
 ## leaves, y = spread of departures, z = length of each atom's trip.
 @export var morph_timing := Vector3(0.0, 0.62, 0.33):
@@ -568,7 +575,7 @@ func _init() -> void:
 			&"wobble_amplitude", &"wobble_frequency", &"wobble_speed", &"explode", &"explode_center",
 			&"dissolve", &"dissolve_direction", &"dissolve_directional", &"dissolve_spread",
 			&"dissolve_drift", &"dissolve_edge_color", &"glow_strength", &"morph", &"morph_stagger",
-			&"morph_arc", &"debris_lifetime", &"debris_gravity", &"beads", &"square", &"morph_swarm", &"morph_timing", &"morph_stream", &"morph_focus", &"morph_span", &"morph_reverse", &"morph_reach_max", &"morph_flash", &"atom_min_px", &"atom_max_px", &"atom_depth", &"bead_overlap", &"splats", &"clip_to_bounds", &"texture_tile", &"texture_offset"]:
+			&"morph_arc", &"debris_lifetime", &"debris_gravity", &"beads", &"square", &"morph_swarm", &"morph_vortex", &"morph_timing", &"morph_stream", &"morph_focus", &"morph_span", &"morph_reverse", &"morph_reach_max", &"morph_flash", &"atom_min_px", &"atom_max_px", &"atom_depth", &"bead_overlap", &"splats", &"clip_to_bounds", &"texture_tile", &"texture_offset"]:
 		_sp(p, get(p))
 	_apply_element()
 

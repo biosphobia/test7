@@ -84,6 +84,7 @@ uniform float morph_swarm = 0.7;
 uniform bool morph_stream = false;         // reassemble as a stream instead of burst-and-swarm
 uniform vec3 morph_focus = vec3(0.0);      // stream: point the new shape grows out from (local)
 uniform float morph_span = 1.0;            // stream: distance from the focus to the farthest atom
+uniform float morph_vortex = 0.0;          // stream: > 0 = dissolve into a whirling cloud of this radius first
 uniform vec3 morph_timing = vec3(0.0, 0.62, 0.33); // stream: delay, spread of departures, length of each trip (fractions of the morph)
 uniform vec4 morph_carry = vec4(0.0, 0.0, 0.0, 1.0); // stream: offset (xyz) and scale (w) of the held end
 uniform vec3 morph_carry_center = vec3(0.0);
@@ -545,6 +546,16 @@ void vertex() {
 				from = held;
 			}
 			disp = max(disp, 1e-6); // (not "in place": no trimming at the old bounds)
+			float whirl = 0.0;
+			if (morph_vortex > 0.0) {
+				// Dissolve first: every atom lets go almost at once (in clumps),
+				// spends most of the morph aloft in a whirling cloud, and
+				// settles late, the new shape growing outwards from the focus.
+				float leave = 0.02 + 0.16 * mix(seed, grp, 0.6);
+				float land = 0.6 + 0.36 * (morph_reverse ? hash01(uid * 37u + 5u) : far);
+				u = clamp((morph - leave) / (land - leave), 0.0, 1.0);
+				whirl = morph_vortex;
+			}
 			float e = u * u * u * (u * (u * 6.0 - 15.0) + 10.0);
 			vec3 along = normalize(tp - from + vec3(1e-6));
 			vec3 side = normalize(cross(along, vec3(0.3, 1.0, 0.2)) + vec3(1e-6));
@@ -552,6 +563,16 @@ void vertex() {
 			float turn = e * 5.0 + seed * TAU;
 			float wide = sin(e * PI) * morph_arc * (0.4 + 0.6 * hash01(uid * 23u + 7u));
 			p = mix(from, tp, e) + (side * cos(turn) + up2 * sin(turn)) * wide;
+			if (whirl > 0.0) {
+				// The cloud never stops turning: each atom orbits the line it
+				// travels along at its own radius and speed, and rides a slow
+				// turbulence, so the whole thing swirls and breathes.
+				float h1 = hash01(uid * 23u + 7u);
+				float orbit = cloud_time * (3.0 + 5.0 * hash01(uid * 31u + 9u)) * (h1 < 0.5 ? 1.0 : -0.7) + seed * TAU;
+				float rad = whirl * (0.25 + 0.75 * h1) * pow(max(sin(e * PI), 0.0), 0.6);
+				p = mix(from, tp, e) + (vec3(cos(orbit), sin(orbit), 0.0)
+						+ 0.5 * flow(p * 9.0 + seed, cloud_time * 2.0)) * rad;
+			}
 			t = e;
 			morph_t = e;
 			ct = e;
@@ -874,6 +895,9 @@ void vertex() {
 	float mid_z = -(MODELVIEW_MATRIX * vec4(bounds_min + bounds_size * 0.5, 1.0)).z;
 	float nearness = atom_depth > 0.0 ? clamp(pow(max(mid_z, 0.01) / max(-vp.z, 0.01), atom_depth), 0.45, 2.2) : 1.0;
 	float loose_px = clamp(target_px * cover, atom_min_px, max(atom_max_px, atom_min_px)) * nearness;
+	if (atom_depth > 0.0) {
+		loose_px *= 0.65 + 0.7 * hash01(uid * 29u + 1u); // and no two the same size
+	}
 	// A morphing atom eases back to its resting size while it flies in, so
 	// nothing changes at the moment it lands.
 	loose_px = mix(loose_px, target_px * cover, smoothstep(0.35, 1.0, morph_t));
