@@ -6,8 +6,8 @@ extends Node
 ## resuming sends each one back and the game carries on exactly where it was.
 ## This node keeps running while everything else is paused.
 
-const OPEN_TIME := 0.85
-const CLOSE_TIME := 0.85
+const OPEN_TIME := 1.0
+const CLOSE_TIME := 1.0
 const DISTANCE := 2.0
 
 var main: Node3D           # demo/main.gd

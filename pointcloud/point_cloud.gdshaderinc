@@ -903,16 +903,31 @@ void vertex() {
 			vec3 out_dir = normalize(target - centre + toward * (hash01(mk + 63u) - 0.3) * 0.6 + vec3(1e-6));
 			vec3 halo = target + out_dir * (0.25 + 0.55 * hash01(mk + 65u))
 					+ cross(toward, out_dir) * 0.3 * (1.0 - be);   // a slight inward curl
+			// One atom in five makes the whole trip in sight, as a fine speck:
+			// thin, even streams from every object converge on the halo, so
+			// you see the world's atoms go to build the menu without the view
+			// filling up. The rest slip across unseen.
+			bool seen = hash01(mk + 67u) < 0.2;
 			if (me < 0.5) {
-				p = place + lift * a * a;
-				size_scale *= 1.0 - smoothstep(0.25, 1.0, a);
+				float ae = a * a * (3.0 - 2.0 * a);
+				if (seen) {
+					p = mix(place, halo, ae) + lift * sin(ae * PI) * 0.6;
+					gather_cap = mix(4096.0, 1.7, smoothstep(0.0, 0.25, a));
+				} else {
+					p = place + lift * a * a;
+					size_scale *= 1.0 - smoothstep(0.25, 1.0, a);
+				}
 			} else {
 				p = mix(halo, target, be);
-				size_scale *= smoothstep(0.0, 0.35, b);
+				if (seen) {
+					gather_cap = mix(1.7, 4096.0, smoothstep(0.0, 0.35, b));
+				} else {
+					size_scale *= smoothstep(0.0, 0.35, b);
+				}
 				menu_e = max(be, 0.2);
 				menu_lit = smoothstep(0.5, 1.0, b);
 				// (white-hot as it condenses, cooling to the menu's colour)
-				c = vec4(mix(mcol, vec3(1.0), 0.6 * (1.0 - be)), 0.0);
+				c = vec4(mix(mcol, vec3(1.0), 0.45 * (1.0 - be)), 0.0);
 			}
 			float arc = sin(me * PI);
 			disp = max(disp, max(min(distance(p, place), distance(p, target)), 1e-6));
@@ -1029,6 +1044,7 @@ void vertex() {
 	if (!shadow_pass) {
 		px_cap = mix(px_cap, 12.0, smoothstep(0.0, 0.12, menu_e));
 		px_cap = mix(px_cap, 16.0, menu_dust * smoothstep(0.0, 0.12, menu_e));
+		px_cap = min(px_cap, gather_cap);
 	}
 	POINT_SIZE = v_alive > 0.5 ? clamp(px, min(min_pixel_size, px_cap), px_cap) : 1.0;
 	if (shadow_pass && v_alive > 0.5) {
