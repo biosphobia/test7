@@ -16,7 +16,7 @@ const HOME := Vector3(0.36, -0.24, -0.85)      # in the camera's space
 ## Where the shotgun sits relative to her: she stays where she is and the gun
 ## is assembled around her.
 const GUN_OFFSET := Vector3(-0.09, -0.01, 0.23)
-const MORPH_TIME := 1.9
+const MORPH_TIME := 1.3
 ## The two ends of the shotgun, in her space: she flies between them.
 const MUZZLE_END := Vector3(-0.09, 0.02, -0.24)
 const STOCK_END := Vector3(-0.09, -0.03, 0.56)
@@ -48,6 +48,8 @@ var _kick := 0.0               # recoil
 var _reload := 0.0             # 0..1 through the reload animation
 var _fire_cd := 0.0
 var _pending := 0
+var _light: OmniLight3D        # the glow of the switch (and a little of her own)
+var _settle := 1.0             # eases her wing-beat back in after a switch
 
 
 func _ready() -> void:
@@ -105,6 +107,13 @@ func _ready() -> void:
 		w.emission_strength = 0.35
 	eyes.emission_strength = 0.0
 	body.morph_finished.connect(_on_morph_finished)
+	_light = OmniLight3D.new()
+	_light.light_color = Color(0.8, 0.9, 1.0)
+	_light.omni_range = 2.2
+	_light.omni_attenuation = 1.4
+	_light.shadow_enabled = false
+	_light.light_energy = 0.0
+	add_child(_light)
 
 
 func _add_cloud(parent: Node3D, fairy: PointCloudData, gun: PointCloudData) -> PointCloud:
@@ -112,6 +121,12 @@ func _add_cloud(parent: Node3D, fairy: PointCloudData, gun: PointCloudData) -> P
 	# She may need more atoms as a tool than as a fairy: start with enough.
 	if fairy.size() < gun.size():
 		fairy = fairy.resampled(gun.size())
+	# Nothing may change at the moment a switch completes, so the two things
+	# that differ between "morphing" and "at rest" are off for her: trimming
+	# at the bounding box, and dropping atoms that face away.
+	fairy.closed = false
+	gun.closed = false
+	c.clip_to_bounds = false
 	c.data = fairy
 	c.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	c.lod = false
@@ -178,6 +193,7 @@ func set_tool(t: int) -> void:
 
 func _on_morph_finished() -> void:
 	busy = false
+	_settle = 0.0
 	for c in _forms:
 		(c as PointCloud).set_morph_carry(Vector3.ZERO)
 	# Keep the other form warm for the way back.
@@ -252,7 +268,7 @@ func _process(delta: float) -> void:
 			# The cloud twirls once around as it gathers, and she pops up out
 			# of it and drops back to her spot.
 			turn = Vector3(0.0, TAU * (1.0 - smoothstep(0.05, 0.9, m)), 0.0)
-			move = Vector3(0.0, 0.08, 0.0) * sin(clampf((m - 0.45) / 0.55, 0.0, 1.0) * PI)
+			move = Vector3(0.0, 0.08, 0.0) * pow(sin(clampf((m - 0.4) / 0.6, 0.0, 1.0) * PI), 2.0)   # (comes to rest gently)
 	_gun = 1.0 - fairy
 	# Hover and bob as a fairy; held steady as a gun.
 	var bob := Vector3(sin(_time * 1.3) * 0.012, sin(_time * 2.1) * 0.02, 0.0) * fairy
@@ -262,7 +278,8 @@ func _process(delta: float) -> void:
 	rotation = Vector3(0.12 * _kick - 0.18 * r, 0.05 * r, 0.3 * r) + turn
 	# Wings flap as a fairy and fold flat into the gun.
 	# (Not mid-switch: the wings' atoms are busy, and their pivots must hold still.)
-	var flap := (0.35 + 0.55 * sin(_time * 15.0)) * (0.0 if busy else fairy)
+	_settle = minf(_settle + delta * 3.0, 1.0)
+	var flap := (0.35 + 0.55 * sin(_time * 15.0)) * (0.0 if busy else fairy) * smoothstep(0.0, 1.0, _settle)
 	_pivot_l.rotation.z = -flap
 	_pivot_r.rotation.z = flap
 	# Blink.
@@ -274,6 +291,13 @@ func _process(delta: float) -> void:
 	_eye_node.scale.y = lerpf(1.0, 0.12, sin(_blink * PI) * fairy)
 	# (dimmer while her atoms are loose: a bright cloud would wash out to white)
 	var calm := 1.0 + 1.2 * flash
+	# Light: her own soft glow, and a swell of light through the switch that
+	# falls on the forming tool and whatever is near.
+	# (It rises and falls smoothly, and the same soft light stays on whatever
+	# she is, so nothing changes when the switch completes.)
+	var surge := pow(sin(m * PI), 2.0) if busy else 0.0
+	_light.light_energy = 0.3 + 2.0 * surge
+	_light.light_color = Color(1.0, 0.93, 0.7).lerp(Color(0.75, 0.88, 1.0), surge)
 	body.emission_strength = lerpf(0.9, 0.12, _form) * calm
 	wing_l.emission_strength = lerpf(0.35, 0.1, _form) * calm
 	wing_r.emission_strength = wing_l.emission_strength
