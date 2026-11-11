@@ -6,8 +6,8 @@ extends Node
 ## resuming sends each one back and the game carries on exactly where it was.
 ## This node keeps running while everything else is paused.
 
-const OPEN_TIME := 1.1
-const CLOSE_TIME := 1.4
+const OPEN_TIME := 0.85
+const CLOSE_TIME := 0.85
 const DISTANCE := 2.0
 
 var main: Node3D           # demo/main.gd
@@ -103,7 +103,7 @@ func set_open(on: bool) -> void:
 	# spat back out in reverse.
 	var span := maxf(absf((1.0 if on else 0.0) - amount), 0.3)
 	_tween.tween_property(self, "amount", 1.0 if on else 0.0, (OPEN_TIME if on else CLOSE_TIME) * span) \
-			.set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_OUT)
+			.set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
 	if not on:
 		get_tree().paused = false
 		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED

@@ -856,7 +856,9 @@ void vertex() {
 		// Each object goes as one: all its atoms share a slot in the order
 		// (menu_order), with only a little spread between them, so objects
 		// are drawn in, and spat back out, one after another.
-		float mu = clamp((menu_amount - 0.56 * menu_order - 0.05 * clump - 0.03 * hash01(mk + 11u)) / 0.36, 0.0, 1.0);
+		// (Timing depends only on where in the menu the atom is headed: the
+		// menu grows from its middle outwards, and the world thins out evenly.)
+		float mu = clamp((menu_amount - 0.28 * clamp(length(mpos.xy) / 1.4, 0.0, 1.0) - 0.12 * hash01(mk + 11u)) / 0.6, 0.0, 1.0);
 		float me = mu * mu * mu * (mu * (mu * 6.0 - 15.0) + 10.0);
 		if (hash01(mk + 23u) < menu_dust_share) {
 			// Dust: a few atoms never join. They spread evenly through the empty
@@ -884,34 +886,37 @@ void vertex() {
 			menu_lit = me; // entirely self-coloured
 			disp = max(disp, 1.0 * me);
 		} else {
-			// Into the menu: a wide arc through the scene, out to one side and
-			// towards the viewer, in a ribbon with its neighbours.
-			vec3 side = normalize(cross(toward, target - place) + vec3(1e-6));
-			float arc = sin(me * PI);
-			float span = distance(place, target);
-			vec3 p_arc = mix(place, target, me) + side * arc * span * 0.22 * (0.4 + 0.6 * clump)
-					+ toward * arc * span * 0.12 * hash01(mk + 19u)
-					+ flow(place * 0.5 + clump * 3.0, menu_time * 0.4) * arc * 0.25;
-			// Out of the menu (menu_spiral = 1): spat out along a spiral, one
-			// turn about the menu's axis, fast near the menu and unwinding
-			// gently as each atom nears its place.
+			// Two short moves, the same for every scene, with no long flight
+			// across the view in between.
+			// 1) The atom lets go of its place: it drifts a little way towards
+			//    the menu and upwards, dwindling to nothing as it goes, so
+			//    objects evaporate where they stand.
+			// 2) It condenses out of a halo around the menu: it appears as a
+			//    speck just outside its spot and settles inwards, growing.
+			float a = clamp(me / 0.5, 0.0, 1.0);
+			float b = clamp((me - 0.5) / 0.5, 0.0, 1.0);
+			float be = 1.0 - (1.0 - b) * (1.0 - b) * (1.0 - b);
 			vec3 centre = menu_xform[3].xyz;
-			vec3 rel = mix(place, target, me) - centre;
-			// (A slight twist only, greatest mid-way and gone at both ends.)
-			float ang = 1.1 * sin(me * PI) * me;
-			rel = rel * cos(ang) + cross(toward, rel) * sin(ang) + toward * dot(toward, rel) * (1.0 - cos(ang));
-			vec3 p_spiral = centre + rel - toward * arc * 0.25; // leaves behind the menu, not across its face
-			p = mix(p_arc, p_spiral, menu_spiral);
-			menu_e = me;
-			menu_lit = smoothstep(0.6, 1.0, me); // landed atoms show their own colour only: an even, clean surface (the slabs' darker sides give the depth)
-			// In flight it is a free, self-lit speck; once landed it is part of
-			// a surface again and is lit by the menu's own shape.
+			vec3 to_menu = centre - place;
+			vec3 lift = normalize(to_menu + vec3(1e-6)) * min(length(to_menu) * 0.18, 1.2) + menu_up * 0.35
+					+ rand_dir(mk + 61u) * 0.25;
+			vec3 out_dir = normalize(target - centre + toward * (hash01(mk + 63u) - 0.3) * 0.6 + vec3(1e-6));
+			vec3 halo = target + out_dir * (0.25 + 0.55 * hash01(mk + 65u))
+					+ cross(toward, out_dir) * 0.3 * (1.0 - be);   // a slight inward curl
+			if (me < 0.5) {
+				p = place + lift * a * a;
+				size_scale *= 1.0 - smoothstep(0.25, 1.0, a);
+			} else {
+				p = mix(halo, target, be);
+				size_scale *= smoothstep(0.0, 0.35, b);
+				menu_e = max(be, 0.2);
+				menu_lit = smoothstep(0.5, 1.0, b);
+				// (white-hot as it condenses, cooling to the menu's colour)
+				c = vec4(mix(mcol, vec3(1.0), 0.6 * (1.0 - be)), 0.0);
+			}
+			float arc = sin(me * PI);
 			disp = max(disp, max(min(distance(p, place), distance(p, target)), 1e-6));
 			fly = max(fly, arc);
-			// (On the way out an atom drops the menu's colour and size almost at
-			// once, so what streams away is fine and already in the world's colours.)
-			c = vec4(mix(c.rgb, mcol, smoothstep(mix(0.35, 0.8, menu_spiral), 1.0, me)), c.a * (1.0 - me));
-			menu_size *= mix(1.0, mix(0.4, 1.0, smoothstep(0.82, 1.0, me)), menu_spiral);
 			n = normalize(mix(n, mat3(menu_xform) * mnrm, me) + vec3(1e-6));
 		}
 	}
