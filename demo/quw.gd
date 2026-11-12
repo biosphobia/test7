@@ -53,6 +53,7 @@ var _pump := 0.0               # 0..1 through the pump stroke after a shot
 var _flash: PointCloud         # muzzle flash: a puff of white-hot atoms
 var _flash_t := 1.0
 var _pump_home := Vector3.ZERO
+var _low := 0.0                # 1 = gun held low, muzzle down (while it is racked)
 var _racked := false           # the pump has been worked for this switch
 var _settle := 1.0             # eases her wing-beat back in after a switch
 
@@ -298,19 +299,19 @@ func _process(delta: float) -> void:
 			var k := clampf((m - 0.5) / 0.5, 0.0, 1.0) - 1.0
 			var away := -(2.7 * k * k * k + 1.7 * k * k) * smoothstep(0.0, 0.3, m)   # 1 -> 0, overshooting
 			turn = Vector3(0.55, -0.25, 0.9) * away
-			# As the gun snaps home it is racked: the pump goes back and forward,
-			# and the gun gives a short kick as the action closes.
-			if m > 0.78 and not _racked:
+			# As the gun arrives it is held low, muzzle down, and racked: the pump
+			# goes back and forward, and the gun then swings up and locks into
+			# the shooting position. (No recoil: that would read as a shot.)
+			if m > 0.72 and not _racked:
 				_racked = true
-				_fire_cd = maxf(_fire_cd, 0.45)
+				_fire_cd = maxf(_fire_cd, 0.6)
 				var tw := create_tween()
-				tw.tween_property(self, "_pump", 0.5, 0.15).from(0.0).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+				tw.tween_property(self, "_low", 1.0, 0.14).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_OUT)
+				tw.parallel().tween_property(self, "_pump", 0.5, 0.16).from(0.0).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
 				tw.tween_interval(0.05)
 				tw.tween_property(self, "_pump", 1.0, 0.11).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
-				tw.tween_callback(func():
-					_pump = 0.0
-					_kick = maxf(_kick, 0.32))
-			move += Vector3(0.05, 0.05, 0.08) * away
+				tw.tween_callback(func(): _pump = 0.0)
+				tw.tween_property(self, "_low", 0.0, 0.26).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
 		else:
 			fairy = smoothstep(0.75, 1.0, m)
 			# The cloud twirls once around as it gathers, and she pops up out
@@ -320,10 +321,10 @@ func _process(delta: float) -> void:
 	_gun = 1.0 - fairy
 	# Hover and bob as a fairy; held steady as a gun.
 	var bob := Vector3(sin(_time * 1.3) * 0.012, sin(_time * 2.1) * 0.02, 0.0) * fairy
-	position = HOME + bob + Vector3(0, 0.025, 0.13) * _kick + Vector3(0, -0.01, 0.015) * sin(_pump * PI) + move
+	position = HOME + bob + Vector3(0, 0.025, 0.13) * _kick + Vector3(0, -0.01, 0.015) * sin(_pump * PI) + Vector3(0.0, -0.085, 0.02) * _low + move
 	# Reload: the gun tilts over and dips, then comes back.
 	var r := sin(_reload * PI)
-	rotation = Vector3(0.3 * _kick - 0.18 * r - 0.05 * sin(_pump * PI), 0.05 * r, 0.3 * r + 0.06 * sin(_pump * PI)) + turn
+	rotation = Vector3(0.3 * _kick - 0.18 * r - 0.05 * sin(_pump * PI), 0.05 * r, 0.3 * r + 0.06 * sin(_pump * PI)) + Vector3(-0.1, 0.0, 0.1) * _low + turn
 	# Wings flap as a fairy and fold flat into the gun.
 	# (Not mid-switch: the wings' atoms are busy, and their pivots must hold still.)
 	_settle = minf(_settle + delta * 3.0, 1.0)
