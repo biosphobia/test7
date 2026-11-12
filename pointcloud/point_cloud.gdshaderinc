@@ -167,6 +167,7 @@ uniform float debris_bounce = 0.3;
 uniform float debris_friction = 0.4;
 uniform float debris_drag = 0.0;
 uniform float debris_glow = 1.0;
+uniform float fracture_size = 0.0;         // > 0: holes break in angular blocks of about this size
 uniform float debris_clump = 0.0;          // 0 = every atom its own way, 1 = flies in chunks
 uniform float debris_clump_size = 0.06;    // size of a chunk, local units
 uniform float heal : hint_range(0.0, 1.0) = 0.0;
@@ -509,11 +510,22 @@ void vertex() {
 	if (st.x < -1.0) {
 		float cav = (-1.0 - st.x) * (1.0 - heal);
 		vec3 wall_n = normalize(st.yzw + vec3(1e-6));
-		n = normalize(mix(n, wall_n, cav * (on_surface ? 0.35 : 1.0)) + vec3(1e-6));
-		c.rgb *= 1.0 - cavity_strength * cav * (on_surface ? 0.4 : 1.0);
+		if (fracture_size > 0.0) {
+			// Rough material: the outer surface runs clean up to the break (a
+			// hard, defined edge), and the broken face is made of flat facets,
+			// one per block of the material, each catching the light its own way.
+			if (!on_surface) {
+				uint fk = lattice_key(base, fracture_size * 0.55, 0);
+				n = normalize(wall_n + rand_dir(fk) * 0.9);
+				c.rgb *= 0.95 + 0.75 * hash01(fk + 5u);
+			}
+		} else {
+			n = normalize(mix(n, wall_n, cav * (on_surface ? 0.35 : 1.0)) + vec3(1e-6));
+			c.rgb *= 1.0 - cavity_strength * cav * (on_surface ? 0.4 : 1.0);
+		}
 		// The inside glows a little with its own colour, so a hole facing away
 		// from the light still shows what the object is made of.
-		wall_lit = 0.8 * cav * (on_surface ? 0.0 : 1.0);
+		wall_lit = (fracture_size > 0.0 ? 0.7 : 0.8 * cav) * (on_surface ? 0.0 : 1.0);
 	}
 
 	// --- skeletal animation (linear blend skinning)
@@ -1073,7 +1085,7 @@ void vertex() {
 	float loose = (on_surface || st.x < -1.0) ? max(smoothstep(0.0, agap * 2.0, disp), fly) : 1.0;
 	// (Chunk debris is drawn a little bigger than a loose speck, so the atoms
 	// of one chunk close up into a crumb, but never as big blobs.)
-	float chunk_px = 5.0;
+	float chunk_px = 6.0;
 	// Depth: a loose atom nearer the viewer than the middle of its cloud is
 	// drawn bigger and brighter, one further away smaller and dimmer
 	// (exaggerated by atom_depth), so a burst reads as a volume, not a flat

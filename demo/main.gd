@@ -455,12 +455,27 @@ func _build_props() -> void:
 
 	# A block of a different element: stone. Its atoms are heavy grains that
 	# are thrown out by a hit, fall, bounce and stay where they land.
-	var rock_rng := RandomNumberGenerator.new()
-	rock_rng.seed = 11
+	# Its colour comes from smooth noise at two scales (broad mottling and
+	# finer grain), so it reads as weathered rock, not as random speckle.
+	var rock_noise := FastNoiseLite.new()
+	rock_noise.seed = 11
+	rock_noise.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
+	rock_noise.frequency = 1.1
+	rock_noise.fractal_octaves = 4
+	rock_noise.fractal_gain = 0.55
+	var rock_veins := FastNoiseLite.new()
+	rock_veins.seed = 23
+	rock_veins.noise_type = FastNoiseLite.TYPE_CELLULAR
+	rock_veins.cellular_return_type = FastNoiseLite.RETURN_DISTANCE2_SUB
+	rock_veins.frequency = 2.2
 	var rock := PointSampler.box(Vector3(2, 2, 2), 400000, {"fill": PointSampler.Fill.SOLID,
-		"color_fn": func(_p, _n, _c, inside: bool) -> Color:
-			var g := rock_rng.randf_range(0.42, 0.62) * (0.8 if inside else 1.0)
-			return Color(g * 0.92, g * 0.97, g * 1.08)})
+		"color_fn": func(p: Vector3, _n, _c, inside: bool) -> Color:
+			var g := 0.5 + 0.2 * rock_noise.get_noise_3dv(p)
+			# Dark seams where the cells of the rock meet.
+			g *= 0.72 + 0.28 * smoothstep(0.0, 0.12, rock_veins.get_noise_3dv(p) + 1.0)
+			if inside:
+				g *= 0.9
+			return Color(g * 0.95, g * 0.97, g * 1.05)})
 	var rb := BoxShape3D.new()
 	rb.size = Vector3(2, 2, 2)
 	var rock_body := _make_prop("Stone block", rock, Vector3(4.5, 1.0, 2.0), rb)

@@ -51,9 +51,9 @@ static func stone() -> PointElement:
 	var e := PointElement.new()
 	e.name = "Stone"
 	e.fracture = 1.0
-	e.fracture_size = 0.16
-	e.clump = 0.85
-	e.clump_size = 0.09
+	e.fracture_size = 0.2
+	e.clump = 0.9
+	e.clump_size = 0.16
 	e.gravity = 9.8
 	e.lifetime = 0.0
 	e.lands = true
