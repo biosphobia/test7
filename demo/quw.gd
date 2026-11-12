@@ -53,6 +53,7 @@ var _pump := 0.0               # 0..1 through the pump stroke after a shot
 var _flash: PointCloud         # muzzle flash: a puff of white-hot atoms
 var _flash_t := 1.0
 var _pump_home := Vector3.ZERO
+var _racked := false           # the pump has been worked for this switch
 var _settle := 1.0             # eases her wing-beat back in after a switch
 
 
@@ -194,6 +195,7 @@ func set_tool(t: int) -> void:
 		return
 	tool = t
 	busy = true
+	_racked = false
 	_pending = _forms.size()
 	for c in _forms:
 		var cloud := c as PointCloud
@@ -296,6 +298,18 @@ func _process(delta: float) -> void:
 			var k := clampf((m - 0.5) / 0.5, 0.0, 1.0) - 1.0
 			var away := -(2.7 * k * k * k + 1.7 * k * k) * smoothstep(0.0, 0.3, m)   # 1 -> 0, overshooting
 			turn = Vector3(0.55, -0.25, 0.9) * away
+			# As the gun snaps home it is racked: the pump goes back and forward,
+			# and the gun gives a short kick as the action closes.
+			if m > 0.78 and not _racked:
+				_racked = true
+				_fire_cd = maxf(_fire_cd, 0.45)
+				var tw := create_tween()
+				tw.tween_property(self, "_pump", 0.5, 0.15).from(0.0).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+				tw.tween_interval(0.05)
+				tw.tween_property(self, "_pump", 1.0, 0.11).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
+				tw.tween_callback(func():
+					_pump = 0.0
+					_kick = maxf(_kick, 0.32))
 			move += Vector3(0.05, 0.05, 0.08) * away
 		else:
 			fairy = smoothstep(0.75, 1.0, m)
