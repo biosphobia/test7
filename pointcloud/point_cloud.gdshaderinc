@@ -740,6 +740,13 @@ void vertex() {
 				float len = max(length(st.yzw), 1e-4);
 				vec3 qdir = normalize(floor(st.yzw / len * coarse + 0.5) + vec3(1e-4));
 				vec3 chunk = qdir * exp2(floor(log2(len) * coarse + 0.5) / coarse) * (0.75 + 0.5 * hash01(ck));
+				if (debris_shards) {
+					// Every shard is thrown its own way, differently for every
+					// shot, so they end up scattered about, not in the same heap.
+					ck = pcg_hash(ck + uint(st.x * 2.0) * 2654435761u);
+					vec3 rd = rand_dir(ck + 21u);
+					chunk = (qdir * 0.45 + vec3(rd.x, abs(rd.y) * 0.7, rd.z) * 1.1) * (1.0 + 2.2 * hash01(ck + 23u));
+				}
 				vel = mix(vel, chunk, debris_clump);
 				chunky = debris_clump;
 				if (debris_clump > 0.5) {
