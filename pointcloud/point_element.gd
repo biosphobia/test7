@@ -27,6 +27,11 @@ extends Resource
 @export var glow := 1.0
 ## Resistance to being chipped: hits make craters this many times smaller.
 @export var hardness := 1.0
+## Shots pass straight through (and hit whatever is behind).
+@export var penetrable := false
+## Breaks like glass: a small hole where it is hit, the area around it
+## cracked, and small shards dropping out, instead of chipping like stone.
+@export var shatters := false
 ## 0..1: how roughly the material breaks. 0 = holes are round with a soft
 ## edge; 1 = they follow angular blocks of about fracture_size (and smaller),
 ## like chipped stone.
@@ -62,6 +67,29 @@ static func stone() -> PointElement:
 	e.glow = 0.0
 	e.hardness = 1.15
 	e.scatter = 1.15
+	return e
+
+
+## Glass: see-through (set PointCloud.opacity), shot straight through, and it
+## shatters into small sharp shards. `toughness` scales how little breaks:
+## 0.6 = thin window glass, 1 = ordinary, 2 = toughened.
+static func glass(toughness := 1.0) -> PointElement:
+	var e := PointElement.new()
+	e.name = "Glass"
+	e.gravity = 9.8
+	e.lifetime = 0.0
+	e.lands = true
+	e.bounce = 0.3
+	e.friction = 0.5
+	e.glow = 0.0
+	e.hardness = toughness
+	e.scatter = 0.7
+	e.penetrable = true
+	e.shatters = true
+	e.fracture = 1.0
+	e.fracture_size = 0.09
+	e.clump = 0.9
+	e.clump_size = 0.05
 	return e
 
 

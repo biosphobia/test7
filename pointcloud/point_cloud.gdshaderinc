@@ -167,6 +167,7 @@ uniform float debris_bounce = 0.3;
 uniform float debris_friction = 0.4;
 uniform float debris_drag = 0.0;
 uniform float debris_glow = 1.0;
+uniform float cloud_opacity = 1.0;               // < 1: see-through (screen-door)
 uniform float fracture_size = 0.0;         // > 0: holes break in angular blocks of about this size
 uniform float debris_clump = 0.0;          // 0 = every atom its own way, 1 = flies in chunks
 uniform float debris_clump_size = 0.06;    // size of a chunk, local units
@@ -1144,6 +1145,16 @@ void vertex() {
 void fragment() {
 	if (v_alive < 0.5) {
 		discard;
+	}
+	if (cloud_opacity < 1.0 && v_shadow < 0.5) {
+		// See-through without blending: an even pattern of pixels is left
+		// out, so what is behind shows between them. Loose atoms (shards) and
+		// bright painted marks (cracks) are more solid than the pane itself.
+		float solid = max(v_fly, smoothstep(0.75, 0.95, v_color.r));
+		float ign_o = fract(52.9829189 * fract(dot(FRAGCOORD.xy, vec2(0.06711056, 0.00583715))));
+		if (ign_o > mix(cloud_opacity, 0.85, solid)) {
+			discard;
+		}
 	}
 	vec2 pc = POINT_COORD * 2.0 - 1.0;
 	// Open, thin models are seen from both sides: light the side that faces us.

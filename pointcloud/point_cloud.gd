@@ -105,6 +105,12 @@ static var _clock_frame := -1
 ## close the surface; flying beads shrink. Size and shading change smoothly
 ## with how far a dot is "in flight", so morphs and debris never pop.
 ## Off = flat surface discs (see `splats`) while resting.
+## Below 1 the cloud is see-through: an even pattern of pixels is left out
+## (no alpha blending, so it costs nothing extra and sorts correctly).
+@export_range(0.0, 1.0) var opacity := 1.0:
+	set(v):
+		opacity = v
+		_sp(&"cloud_opacity", v)
 ## Every cloud created from now on uses this for `square`.
 static var default_square := false
 ## Atoms are drawn as little squares (a voxel-art look) instead of round dots.
@@ -625,6 +631,7 @@ func _init() -> void:
 			&"dissolve_drift", &"dissolve_edge_color", &"glow_strength", &"morph", &"morph_stagger",
 			&"morph_arc", &"debris_lifetime", &"debris_gravity", &"beads", &"square", &"morph_swarm", &"morph_vortex", &"morph_timing", &"morph_stream", &"morph_focus", &"morph_span", &"morph_reverse", &"morph_reach_max", &"morph_flash", &"atom_min_px", &"atom_max_px", &"atom_depth", &"bead_overlap", &"splats", &"clip_to_bounds", &"texture_tile", &"texture_offset"]:
 		_sp(p, get(p))
+	_sp(&"cloud_opacity", opacity)
 	_apply_element()
 
 

@@ -507,6 +507,19 @@ func _build_props() -> void:
 	rock_cloud.roughness = 0.95
 	rock_cloud.clip_to_bounds = false  # its faces aren't flat any more
 
+	# A pane of glass: see-through, shot straight through, and it shatters.
+	var pane_size := Vector3(2.6, 2.2, 0.05)
+	var glass := PointSampler.box(pane_size, 260000, {"color": Color(0.45, 0.78, 0.92)})
+	var gb := BoxShape3D.new()
+	gb.size = pane_size
+	var glass_body := _make_prop("Glass pane", glass, Vector3(2.2, 1.1, 4.4), gb)
+	glass_body.rotation.y = 0.35
+	var glass_cloud := glass_body.get_meta("cloud") as PointCloud
+	glass_cloud.element = PointElement.glass()
+	glass_cloud.opacity = 0.28
+	glass_cloud.roughness = 0.1
+	glass_cloud.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+
 	# A floating jelly orb that wobbles all the time.
 	var orb := PointSampler.sphere(1.0, 250000, {"color_fn": func(p: Vector3, _n, _c, _in) -> Color:
 		return Color(0.75, 0.35, 1.0).lerp(Color(0.2, 0.9, 1.0), clampf(p.y * 0.5 + 0.5, 0.0, 1.0))})
@@ -668,9 +681,32 @@ func shoot() -> void:
 		return
 	var cam := player.camera
 	var from := quw.muzzle() if quw.has_gun() else cam.global_position + cam.global_basis * Vector3(0.16, -0.12, -0.6)
+	var hit_cloud := target
+	var hit_body := target_body
+	var hit_pos := target_hit
+	# Glass is shot straight through: it shatters at once and the shot carries
+	# on to whatever is behind it.
+	var passed: Array[RID] = [player.get_rid()]
+	while hit_cloud.element != null and hit_cloud.element.penetrable:
+		_apply_hit(hit_cloud, hit_body, hit_pos, (hit_pos - from).normalized(), 1.0)
+		passed.append(hit_body.get_rid())
+		var dirn := (hit_pos - from).normalized()
+		var q := PhysicsRayQueryParameters3D.create(hit_pos, hit_pos + dirn * 200.0, 0xFFFFFFFF, passed)
+		var next := get_world_3d().direct_space_state.intersect_ray(q)
+		if next.is_empty():
+			return
+		var col: Object = next["collider"]
+		if col.has_meta("cloud_at"):
+			hit_cloud = col.get_meta("cloud_at").call(next["position"])
+		elif col.has_meta("cloud"):
+			hit_cloud = col.get_meta("cloud")
+		else:
+			return
+		hit_body = col
+		hit_pos = next["position"]
 	var b := _free_bullet()
 	if b.is_empty():
-		_apply_hit(target, target_body, target_hit, (target_hit - from).normalized())
+		_apply_hit(hit_cloud, hit_body, hit_pos, (hit_pos - from).normalized())
 		return
 	var cloud: PointCloud = b["cloud"]
 	cloud.explode = 0.0
@@ -678,13 +714,13 @@ func shoot() -> void:
 	cloud.visible = true
 	b["busy"] = true
 	b["from"] = from
-	b["to"] = target_hit
+	b["to"] = hit_pos
 	b["t"] = 0.0
-	b["dur"] = maxf(from.distance_to(target_hit) / BULLET_SPEED, 0.001)
-	b["target"] = target
-	b["body"] = target_body
+	b["dur"] = maxf(from.distance_to(hit_pos) / BULLET_SPEED, 0.001)
+	b["target"] = hit_cloud
+	b["body"] = hit_body
 	# A shotgun: the closer the target, the harder and tighter it hits.
-	b["power"] = clampf(remap(from.distance_to(target_hit), 2.0, 14.0, 1.35, 0.9), 0.9, 1.35)
+	b["power"] = clampf(remap(from.distance_to(hit_pos), 2.0, 14.0, 1.35, 0.9), 0.9, 1.35)
 
 
 func _free_bullet() -> Dictionary:
@@ -734,11 +770,34 @@ func _update_bullets(delta: float) -> void:
 				b["busy"] = false)
 
 
+## Glass: a small clean hole where the shot went through, a ragged ring of
+## shards knocked out around it, and cracks running outwards.
+func _shatter(cloud: PointCloud, hit: Vector3, dir: Vector3, power: float) -> void:
+	var tough := maxf(cloud.element.hardness, 0.05)
+	cloud.carve(hit, 0.11 * power, 2.0, 0.2, dir * 1.2)          # the hole (carve divides by hardness)
+	cloud.carve(hit, 0.3 * power, 0.9, 0.95, dir * 0.5)          # shards around it
+	var side := dir.cross(Vector3.UP).normalized() if absf(dir.y) < 0.95 else Vector3.RIGHT
+	var up := side.cross(dir)
+	var cracks := 7 + randi() % 4
+	for i in cracks:
+		var a := TAU * (i + randf() * 0.7) / cracks
+		var length := (0.35 + 0.5 * randf()) * power / tough
+		var steps := 9
+		var bend := randf_range(-0.5, 0.5)
+		for k in steps:
+			var f := float(k + 1) / steps
+			a += bend * 0.12
+			var p := hit + (side * cos(a) + up * sin(a)) * (0.1 + length * f)
+			cloud.paint(p, 0.035 * (1.0 - 0.5 * f), Color.WHITE, 0.6)
+
+
 func _apply_hit(cloud: PointCloud, body: CollisionObject3D, hit: Vector3, dir: Vector3, power := 1.0) -> void:
 	# Only atoms of an element that breaks (stone) are knocked loose by a shot.
 	# Everything else just ripples lightly where it was hit.
 	var breaks := cloud.element != null and cloud.element.lands
-	if breaks:
+	if cloud.element != null and cloud.element.shatters:
+		_shatter(cloud, hit, dir, power)
+	elif breaks:
 		# The blast is centred a little inside the surface, so the chips are
 		# thrown back out towards the shooter: a main blast and a scatter of
 		# pellets around it, wide and light from afar, tight up close.
