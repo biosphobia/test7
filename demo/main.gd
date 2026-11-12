@@ -476,12 +476,36 @@ func _build_props() -> void:
 			if inside:
 				g *= 0.9
 			return Color(g * 0.95, g * 0.97, g * 1.05)})
+	# A bumpy surface: surface points are pushed in and out along their
+	# normals by smooth noise, and the normals lean with the slope so the
+	# bumps catch the light.
+	var bump := FastNoiseLite.new()
+	bump.seed = 37
+	bump.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
+	bump.frequency = 1.6
+	bump.fractal_octaves = 3
+	var rp := rock.positions
+	var rn := rock.normals
+	var amp := 0.05
+	var e := 0.02
+	for i in rock.get_surface_count():
+		var p := rp[i]
+		var n := rn[i]
+		var grad := Vector3(bump.get_noise_3dv(p + Vector3(e, 0, 0)) - bump.get_noise_3dv(p - Vector3(e, 0, 0)),
+				bump.get_noise_3dv(p + Vector3(0, e, 0)) - bump.get_noise_3dv(p - Vector3(0, e, 0)),
+				bump.get_noise_3dv(p + Vector3(0, 0, e)) - bump.get_noise_3dv(p - Vector3(0, 0, e))) / (2.0 * e)
+		rp[i] = p + n * bump.get_noise_3dv(p) * amp
+		rn[i] = (n - (grad - n * grad.dot(n)) * amp).normalized()
+	rock.positions = rp
+	rock.normals = rn
+	rock.recompute_aabb()
 	var rb := BoxShape3D.new()
 	rb.size = Vector3(2, 2, 2)
 	var rock_body := _make_prop("Stone block", rock, Vector3(4.5, 1.0, 2.0), rb)
 	var rock_cloud := rock_body.get_meta("cloud") as PointCloud
 	rock_cloud.element = PointElement.stone()
 	rock_cloud.roughness = 0.95
+	rock_cloud.clip_to_bounds = false  # its faces aren't flat any more
 
 	# A floating jelly orb that wobbles all the time.
 	var orb := PointSampler.sphere(1.0, 250000, {"color_fn": func(p: Vector3, _n, _c, _in) -> Color:
