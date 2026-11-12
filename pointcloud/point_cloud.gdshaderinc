@@ -170,6 +170,9 @@ uniform float debris_glow = 1.0;
 uniform float cloud_opacity = 1.0;               // < 1: see-through (screen-door)
 uniform float fracture_size = 0.0;         // > 0: holes break in angular blocks of about this size
 uniform float debris_clump = 0.0;          // 0 = every atom its own way, 1 = flies in chunks
+uniform bool debris_shards = false;        // chunks are flat triangles that fall rigidly and lie flat
+uniform vec3 debris_fizz = vec3(0.0);      // landed pieces dissolve: hold min, hold max, duration (0 = never)
+uniform float debris_chunk_px = 6.0;       // largest drawn size of an atom in a chunk
 uniform float debris_clump_size = 0.06;    // size of a chunk, local units
 uniform float heal : hint_range(0.0, 1.0) = 0.0;
 uniform bool has_debris = false;  // skip the state lookup until something was carved
@@ -714,23 +717,55 @@ void vertex() {
 			float life = debris_lifetime > 0.0 ? clamp(dt / debris_lifetime, 0.0, 1.0) : 0.0;
 			// Dots of one point share its velocity but scatter a little.
 			vec3 vel = st.yzw + rand_dir(uid * 13u + 9u) * length(st.yzw) * 0.35 * (sub > 0 ? 1.0 : 0.0);
+			uint atom_key = uid;
+			uint ck = uid;
+			vec3 shard_c = rest;
 			if (debris_clump > 0.0) {
 				// Chunks: atoms from the same little block of the model that set
 				// off in roughly the same direction share one velocity, so they
 				// fly, bounce and land together as a crumb instead of as dust.
 				vec3 cell = floor(rest / debris_clump_size);
-				uint ck = pcg_hash(uint(int(cell.x) + 512) * 73856093u ^ uint(int(cell.y) + 512) * 19349663u ^ uint(int(cell.z) + 512) * 83492791u);
+				uint tri = 0u;
+				float coarse = 2.0;
+				if (debris_shards) {
+					// Shards: the blocks are triangles in the model's x/y plane
+					// (rows staggered so they don't line up), like broken glass.
+					float sx = rest.x / debris_clump_size + 0.5 * hash01(uint(int(cell.y) + 512) * 7919u);
+					cell.x = floor(sx);
+					tri = fract(sx) + fract(rest.y / debris_clump_size) > 1.0 ? 1u : 0u;
+					shard_c = vec3(rest.x, (cell.y + (tri == 1u ? 0.67 : 0.33)) * debris_clump_size, rest.z);
+					coarse = 1.0;
+				}
+				ck = pcg_hash((uint(int(cell.x) + 512) * 73856093u ^ uint(int(cell.y) + 512) * 19349663u ^ uint(int(cell.z) + 512) * 83492791u) + tri * 977u);
 				float len = max(length(st.yzw), 1e-4);
-				vec3 qdir = normalize(floor(st.yzw / len * 2.0 + 0.5) + vec3(1e-4));
-				vec3 chunk = qdir * exp2(floor(log2(len) * 2.0 + 0.5) / 2.0) * (0.75 + 0.5 * hash01(ck));
+				vec3 qdir = normalize(floor(st.yzw / len * coarse + 0.5) + vec3(1e-4));
+				vec3 chunk = qdir * exp2(floor(log2(len) * coarse + 0.5) / coarse) * (0.75 + 0.5 * hash01(ck));
 				vel = mix(vel, chunk, debris_clump);
 				chunky = debris_clump;
 				if (debris_clump > 0.5) {
 					uid = ck; // one bounce and resting height per chunk
 				}
 			}
-			vec3 off = debris_path(p, vel, dt, uid);
+			vec3 off;
+			if (debris_shards) {
+				// A shard falls as one rigid piece, then tips over and lies flat.
+				off = debris_path(vec3(p.x, shard_c.y, p.z), vel, dt, uid);
+				float dy = rest.y - shard_c.y;
+				float lay = 1.0 - smoothstep(0.03, 0.4, shard_c.y + off.y - debris_floor_y);
+				float la = hash01(ck + 3u) * TAU;
+				off += vec3(cos(la) * dy, -dy, sin(la) * dy) * lay;
+			} else {
+				off = debris_path(p, vel, dt, uid);
+			}
 			p += off * (1.0 - heal);
+			if (debris_fizz.z > 0.0) {
+				// After lying there a while (a different while for every piece) it
+				// fizzes away: its atoms pop one by one, drifting up as they go.
+				float hold = 1.0 + mix(debris_fizz.x, debris_fizz.y, hash01(ck + 11u));
+				float fz = clamp((dt - hold - hash01(atom_key * 59u + 1u) * debris_fizz.z) / 0.6, 0.0, 1.0) * (1.0 - heal);
+				p.y += fz * fz * 0.12 * (0.5 + hash01(atom_key * 61u + 7u));
+				size_scale *= 1.0 - fz * fz;
+			}
 			size_scale *= mix(1.0 - life * life, 1.0, heal);
 			glow += (1.0 - smoothstep(0.0, 0.25, debris_lifetime > 0.0 ? life : dt)) * (1.0 - heal) * debris_glow;
 			fly = max(fly, 1.0 - heal);
@@ -1086,7 +1121,7 @@ void vertex() {
 	float loose = (on_surface || st.x < -1.0) ? max(smoothstep(0.0, agap * 2.0, disp), fly) : 1.0;
 	// (Chunk debris is drawn a little bigger than a loose speck, so the atoms
 	// of one chunk close up into a crumb, but never as big blobs.)
-	float chunk_px = 6.0;
+	float chunk_px = debris_chunk_px;
 	// Depth: a loose atom nearer the viewer than the middle of its cloud is
 	// drawn bigger and brighter, one further away smaller and dimmer
 	// (exaggerated by atom_depth), so a burst reads as a volume, not a flat

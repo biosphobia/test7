@@ -42,6 +42,16 @@ extends Resource
 ## land as one.
 @export_range(0.0, 1.0) var clump := 0.0
 @export var clump_size := 0.06
+## Chunks are flat triangles (in the model's x/y plane) that fall as rigid
+## pieces and come to lie flat: shards of glass.
+@export var shards := false
+## Largest on-screen size (pixels) of an atom in a flying chunk.
+@export var chunk_px := 6.0
+## Landed pieces fizz away after lying still for between hold_min and
+## hold_max seconds (each piece its own), over fizz_time seconds. 0 = never.
+@export var fizz_hold_min := 0.0
+@export var fizz_hold_max := 0.0
+@export var fizz_time := 0.0
 ## How violently atoms fly from a hit (multiplies the hit's force).
 @export var scatter := 1.0
 
@@ -87,9 +97,14 @@ static func glass(toughness := 1.0) -> PointElement:
 	e.penetrable = true
 	e.shatters = true
 	e.fracture = 1.0
-	e.fracture_size = 0.09
-	e.clump = 0.9
-	e.clump_size = 0.05
+	e.fracture_size = 0.13
+	e.clump = 1.0
+	e.clump_size = 0.15
+	e.shards = true
+	e.chunk_px = 48.0
+	e.fizz_hold_min = 3.0
+	e.fizz_hold_max = 6.0
+	e.fizz_time = 2.5
 	return e
 
 

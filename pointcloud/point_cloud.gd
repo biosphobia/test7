@@ -862,6 +862,9 @@ func _apply_element() -> void:
 	_sp(&"fracture_size", e.fracture_size if e and e.fracture > 0.0 else 0.0)
 	_sp(&"debris_clump", e.clump if e else 0.0)
 	_sp(&"debris_clump_size", e.clump_size if e else 0.06)
+	_sp(&"debris_shards", e != null and e.shards)
+	_sp(&"debris_chunk_px", e.chunk_px if e else 6.0)
+	_sp(&"debris_fizz", Vector3(e.fizz_hold_min, e.fizz_hold_max, e.fizz_time) if e else Vector3.ZERO)
 	_sp(&"debris_lifetime", e.lifetime if e else debris_lifetime)
 	_sp(&"debris_gravity", Vector3(0, -e.gravity, 0) if e else debris_gravity)
 	if is_inside_tree():
