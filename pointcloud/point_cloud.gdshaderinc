@@ -263,6 +263,16 @@ uint pcg_hash(uint v) {
 	return (word >> 22u) ^ word;
 }
 
+// Key of the lattice cell a point falls in (a cubic lattice of the given
+// size, tilted so its faces don't line up with the model's axes).
+uint lattice_key(vec3 p, float size, int which) {
+	vec3 q = which == 0
+			? vec3(dot(p, vec3(0.8, 0.36, 0.48)), dot(p, vec3(-0.6, 0.48, 0.64)), dot(p, vec3(0.0, -0.8, 0.6)))
+			: vec3(dot(p, vec3(0.6, -0.64, 0.48)), dot(p, vec3(0.8, 0.48, -0.36)), dot(p, vec3(0.0, 0.6, 0.8)));
+	ivec3 c = ivec3(floor(q / size));
+	return pcg_hash(uint(c.x) * 73856093u ^ uint(c.y) * 19349663u ^ uint(c.z) * 83492791u);
+}
+
 float hash01(uint v) {
 	return float(pcg_hash(v)) * (1.0 / 4294967295.0);
 }
@@ -473,6 +483,15 @@ void vertex() {
 			}
 			uint key = uint(id) * 1664525u + uint(cb.w);
 			float r_eff = cb.x * (1.0 - cb.z * hash01(key));
+			float fsize = carve_c[i].w;
+			if (fsize > 0.0) {
+				// Fracture: the edge of the hole follows blocks of the material
+				// (two tilted lattices, coarse and fine), not a fuzzy sphere, so
+				// it breaks along rough, angular faces like chipped stone.
+				float big = hash01(lattice_key(base, fsize, 0) + uint(cb.w));
+				float small = hash01(lattice_key(base, fsize * 0.4, 1) + uint(cb.w));
+				r_eff = cb.x * (1.0 - cb.z * (0.6 * big + 0.3 * small + 0.1 * hash01(key)));
+			}
 			if (d <= r_eff) {
 				vec3 dir = d > 1e-6 ? dv / d : vec3(0.0, 1.0, 0.0);
 				vec3 vel = (dir + rand_dir(key ^ 0x68E31DA4u) * 0.6 + carve_c[i].xyz) * cb.y * (0.4 + hash01(key + 7u));

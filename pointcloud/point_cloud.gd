@@ -823,6 +823,10 @@ func carve(world_pos: Vector3, radius: float, force := 2.0, ragged := 0.35, kick
 		return
 	if element:
 		radius /= maxf(element.hardness, 0.05)
+		if element.fracture > 0.0:
+			# Rough material: the hole's edge varies much more, along its grain.
+			ragged = lerpf(ragged, 0.75, element.fracture)
+			radius *= 1.0 + 0.45 * element.fracture  # (the edge only ever eats inwards)
 		force *= element.scatter
 		_apply_element()  # the ground height follows the cloud's position
 	if _carves.size() >= MAX_CARVES:
@@ -831,7 +835,7 @@ func carve(world_pos: Vector3, radius: float, force := 2.0, ragged := 0.35, kick
 	var seed := randi() & 0xFFFFFF
 	var lk := global_transform.basis.orthonormalized().inverse() * kick
 	_carves.append(PackedFloat32Array([c.x, c.y, c.z, now(), radius / _avg_scale(), force, ragged, float(seed),
-			lk.x, lk.y, lk.z]))
+			lk.x, lk.y, lk.z, (element.fracture_size if element and element.fracture > 0.0 else 0.0)]))
 	_last_carve_time = now()
 	_has_debris = true
 	_sp(&"has_debris", true)
@@ -862,7 +866,7 @@ func _push_carves() -> void:
 			var k := _carves[i]
 			_carve_a[i] = Vector4(k[0], k[1], k[2], k[3])
 			_carve_b[i] = Vector4(k[4], k[5], k[6], k[7])
-			_carve_c[i] = Vector4(k[8], k[9], k[10], 0.0)
+			_carve_c[i] = Vector4(k[8], k[9], k[10], k[11])
 		else:
 			_carve_a[i] = Vector4.ZERO
 			_carve_b[i] = Vector4.ZERO
@@ -1790,6 +1794,7 @@ static func _apply_carve(state: PackedFloat32Array, positions: PackedVector3Arra
 	var force := c[5]
 	var ragged := c[6]
 	var seed := int(c[7])
+	var fsize := c[11] if c.size() > 11 else 0.0
 	for i in grid.query(center, r * WALL_REACH):
 		var k := i * 4
 		if state[k] >= 0.0:
@@ -1798,6 +1803,10 @@ static func _apply_carve(state: PackedFloat32Array, positions: PackedVector3Arra
 		var d := p.distance_to(center)
 		var key := (i * 1664525 + seed) & 0xFFFFFFFF
 		var r_eff := r * (1.0 - ragged * _hash01(key))
+		if fsize > 0.0:
+			var big := _hash01((_lattice_key(p, fsize, 0) + seed) & 0xFFFFFFFF)
+			var small := _hash01((_lattice_key(p, fsize * 0.4, 1) + seed) & 0xFFFFFFFF)
+			r_eff = r * (1.0 - ragged * (0.6 * big + 0.3 * small + 0.1 * _hash01(key)))
 		if d <= r_eff:
 			var dir := (p - center) / d if d > 1e-6 else Vector3.UP
 			var vel := (dir + _rand_dir(key ^ 0x68E31DA4) * 0.6 + Vector3(c[8], c[9], c[10])) * force * (0.4 + _hash01(key + 7))
@@ -1813,6 +1822,19 @@ static func _apply_carve(state: PackedFloat32Array, positions: PackedVector3Arra
 				state[k + 1] = to_c.x
 				state[k + 2] = to_c.y
 				state[k + 3] = to_c.z
+
+
+## Same as lattice_key() in the shader.
+static func _lattice_key(p: Vector3, size: float, which: int) -> int:
+	var q: Vector3
+	if which == 0:
+		q = Vector3(p.dot(Vector3(0.8, 0.36, 0.48)), p.dot(Vector3(-0.6, 0.48, 0.64)), p.dot(Vector3(0.0, -0.8, 0.6)))
+	else:
+		q = Vector3(p.dot(Vector3(0.6, -0.64, 0.48)), p.dot(Vector3(0.8, 0.48, -0.36)), p.dot(Vector3(0.0, 0.6, 0.8)))
+	var cx := floori(q.x / size)
+	var cy := floori(q.y / size)
+	var cz := floori(q.z / size)
+	return _pcg((((cx * 73856093) & 0xFFFFFFFF) ^ ((cy * 19349663) & 0xFFFFFFFF) ^ ((cz * 83492791) & 0xFFFFFFFF)) & 0xFFFFFFFF)
 
 
 static func _pcg(v: int) -> int:

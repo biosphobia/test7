@@ -27,6 +27,11 @@ extends Resource
 @export var glow := 1.0
 ## Resistance to being chipped: hits make craters this many times smaller.
 @export var hardness := 1.0
+## 0..1: how roughly the material breaks. 0 = holes are round with a soft
+## edge; 1 = they follow angular blocks of about fracture_size (and smaller),
+## like chipped stone.
+@export_range(0.0, 1.0) var fracture := 0.0
+@export var fracture_size := 0.16
 ## 0..1: how much loose atoms hold together. 0 = each flies its own way (dust);
 ## near 1 = they break off as chunks of about clump_size that fly, bounce and
 ## land as one.
@@ -45,6 +50,8 @@ static func ember() -> PointElement:
 static func stone() -> PointElement:
 	var e := PointElement.new()
 	e.name = "Stone"
+	e.fracture = 1.0
+	e.fracture_size = 0.16
 	e.clump = 0.85
 	e.clump_size = 0.09
 	e.gravity = 9.8
