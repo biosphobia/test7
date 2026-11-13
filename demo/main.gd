@@ -37,6 +37,7 @@ var _intro_jolt := 0.0
 var _intro_shake := 0.0
 var _intro_hush := 0.0
 var _env: Environment
+var _sun: DirectionalLight3D
 var _intro_enter_from := Vector3.ZERO
 var _intro_flash := 0.0
 var _intro_rays: ColorRect
@@ -93,6 +94,7 @@ func _ready() -> void:
 func start_intro() -> void:
 	intro = Intro.WAIT
 	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+	_sun.shadow_opacity = 0.0  # no shadows until the world stands (they would pop in piece by piece)
 	player.frozen = true  # physics keeps running: the body settles on the ground now, not later
 	_hud_layer.visible = false
 	_intro_cam = Camera3D.new()
@@ -191,6 +193,9 @@ func _intro_crack_step(i: int) -> void:
 
 
 func _intro_release() -> void:
+	var sh := create_tween()
+	sh.tween_interval(5.0)
+	sh.tween_property(_sun, "shadow_opacity", 1.0, 2.5)
 	Sfx.play("bang", 2.0)
 	get_tree().create_timer(1.6).timeout.connect(func(): Sfx.play("build", -4.0))
 	for c in get_tree().get_nodes_in_group(&"point_clouds"):
@@ -206,6 +211,7 @@ func _intro_release() -> void:
 
 
 func _end_intro() -> void:
+	_sun.shadow_opacity = 1.0
 	Sfx.music(true)
 	intro = Intro.NONE
 	player.camera.current = true
@@ -332,6 +338,7 @@ func _setup_environment() -> void:
 	atom_blend.visible = false  # off by default (F7): a full-screen pass, for little change on dense clouds
 
 	var sun := DirectionalLight3D.new()
+	_sun = sun
 	sun.rotation_degrees = Vector3(-48, -35, 0)
 	sun.light_color = Color(1.0, 0.92, 0.82)
 	sun.light_energy = 1.3

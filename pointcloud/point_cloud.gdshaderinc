@@ -128,7 +128,7 @@ uniform vec3 debris_gravity = vec3(0.0, -3.0, 0.0);
 // gather_center; animating it to 0 is the big bang: the ball bursts, then
 // the atoms swarm to their places.
 uniform float gather = 0.0;
-uniform vec3 gather_center = vec3(0.0);   // local space
+uniform vec3 gather_center = vec3(0.0);   // world space
 uniform float gather_radius = 0.4;
 uniform float gather_reach = 30.0;        // distance at which the build finishes
 uniform float gather_heat = 0.0;          // white-hot glow of gathered atoms
@@ -812,10 +812,10 @@ void vertex() {
 		// agitation makes it shake.
 		vec3 ax = rand_dir(gk);
 		vec3 perp = normalize(cross(ax, rand_dir(gk + 5u)) + vec3(1e-5));
-		float ang = cloud_time * (1.2 + 3.5 * hash01(gk + 9u)) + seed * TAU;
+		float ang = cloud_time * (0.5 + 1.2 * hash01(gk + 9u)) + seed * TAU;
 		vec3 orb = perp * cos(ang) + cross(ax, perp) * sin(ang);
 		vec3 sing = orb * gather_radius * pow(hash01(gk + 3u), 0.6)
-				+ flow(orb * 3.0 + seed, cloud_time * 2.0) * gather_radius * 0.2
+				+ flow(orb * 3.0 + seed, cloud_time * 0.8) * gather_radius * 0.08
 				+ rand_dir(gk + uint(cloud_time * 24.0) * 7919u) * gather_radius * 0.7 * gather_agitate;
 		float x = 1.0 - gather;
 
@@ -844,15 +844,17 @@ void vertex() {
 		}
 		// (still drifting slowly outwards while it waits)
 		blown *= 1.0 + 0.25 * x;
-		vec3 from = gather_center + mix(sing, blown, smoothstep(0.0, 0.02, x));
-
+		// (Worked out in world space, so a cloud that is itself moving or
+		// turning, like a flapping wing, doesn't swing its share of the ball.)
+		vec3 from_w = gather_center + mix(sing, blown, smoothstep(0.0, 0.02, x));
 
 		// The scattered cloud never hangs still: it keeps drifting outwards
 		// and slowly wheels around the vertical axis.
 		float wheel = (x - 0.05) * (1.2 + 1.2 * hash01(gk + 67u));
-		vec3 rel = from - gather_center;
-		from = gather_center + vec3(rel.x * cos(wheel) - rel.z * sin(wheel), rel.y,
+		vec3 rel = from_w - gather_center;
+		from_w = gather_center + vec3(rel.x * cos(wheel) - rel.z * sin(wheel), rel.y,
 				rel.x * sin(wheel) + rel.z * cos(wheel));
+		vec3 from = (inverse(MODEL_MATRIX) * vec4(from_w, 1.0)).xyz;
 
 		// Nothing fades or shrinks: the blast simply carries the atoms out of
 		// sight, into the haze, and they stay small specks while they travel.
@@ -919,7 +921,8 @@ void vertex() {
 		float own = clamp((x - gather_color_at - 0.11 * landed - 0.02 * hash01(gk + 51u))
 				/ (0.03 + 0.03 * hash01(gk + 53u)), 0.0, 1.0);
 		own = own * own * (3.0 - 2.0 * own);
-		c = vec4(mix(vec3(1.0), c.rgb, own), c.a * own);
+		// (A soft pale grey, not pure white: it keeps its shading in the light.)
+		c = vec4(mix(vec3(0.7, 0.72, 0.82), c.rgb, own), c.a * own);
 		// The ball glows a little (warm), more when it is disturbed.
 		float heat = gather_heat * (1.0 - smoothstep(0.0, 0.05, x));
 		glow += heat * 0.15;

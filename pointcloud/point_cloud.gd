@@ -306,13 +306,13 @@ func set_menu(menu: AtomMenu, menu_world: Transform3D, hover := Rect2(), time :=
 	set(v):
 		gather_center = v
 		if is_inside_tree():
-			_sp(&"gather_center", to_local(v))
+			_sp(&"gather_center", v)
 			_sp(&"gather_floor", (floor_y - global_position.y) / maxf(_avg_scale(), 1e-6))
 ## Radius of the ball.
 @export var gather_radius := 0.4:
 	set(v):
 		gather_radius = v
-		_sp(&"gather_radius", v / maxf(_avg_scale(), 1e-6) if is_inside_tree() else v)
+		_sp(&"gather_radius", v)
 ## Atoms this far from the ball are the last to leave it (sets the order in
 ## which a scene unfolds).
 @export var gather_reach := 30.0:
