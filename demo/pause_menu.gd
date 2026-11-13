@@ -65,6 +65,7 @@ func set_open(on: bool) -> void:
 	if on == open or main.intro != main.Intro.NONE:
 		return
 	open = on
+	Sfx.play("whoosh", -6.0, 0.9 if on else 1.05)
 	if on:
 		get_tree().paused = true   # everything stops, mid-morph and mid-shot included
 		main._hud_layer.visible = false

@@ -196,6 +196,7 @@ func set_tool(t: int) -> void:
 		return
 	tool = t
 	busy = true
+	Sfx.play("whoosh", -6.0, 1.15)
 	_racked = false
 	_pending = _forms.size()
 	for c in _forms:
@@ -234,6 +235,8 @@ func try_fire() -> bool:
 	_fire_cd = FIRE_INTERVAL
 	_kick = 1.0
 	_flash_t = 0.0
+	Sfx.play("shot", 0.0, randf_range(0.95, 1.05))
+	get_tree().create_timer(0.16).timeout.connect(func(): Sfx.play("pump", -5.0))
 	# Work the pump: back and forward again, a moment after the shot.
 	var tw := create_tween()
 	tw.tween_interval(0.16)
@@ -248,6 +251,7 @@ func reload() -> void:
 	if reloading or not has_gun() or shells == SHELLS:
 		return
 	reloading = true
+	Sfx.play("reload", -4.0)
 	var tw := create_tween()
 	tw.tween_property(self, "_reload", 1.0, RELOAD_TIME)
 	tw.tween_callback(func():
@@ -304,6 +308,7 @@ func _process(delta: float) -> void:
 			# the shooting position. (No recoil: that would read as a shot.)
 			if m > 0.72 and not _racked:
 				_racked = true
+				Sfx.play("pump", -4.0)
 				_fire_cd = maxf(_fire_cd, 0.6)
 				var tw := create_tween()
 				tw.tween_property(self, "_low", 1.0, 0.14).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_OUT)

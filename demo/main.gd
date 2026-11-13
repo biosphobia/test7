@@ -60,6 +60,7 @@ func _ready() -> void:
 	player.name = "Player"
 	player.position = Vector3(0, 0.1, 6.5)
 	add_child(player)
+	add_child(Sfx.new())
 	pause_menu = PauseMenu.new()
 	pause_menu.main = self
 	add_child(pause_menu)
@@ -179,6 +180,7 @@ func intro_bang() -> void:
 
 
 func _intro_crack_step(i: int) -> void:
+	Sfx.play("crack", -4.0 + i, 0.85 + 0.08 * i)
 	_intro_jolt = 1.0
 	var tw := create_tween()
 	tw.tween_property(self, "_intro_crack", (i + 1) / 5.0, 0.12)
@@ -189,6 +191,8 @@ func _intro_crack_step(i: int) -> void:
 
 
 func _intro_release() -> void:
+	Sfx.play("bang", 2.0)
+	get_tree().create_timer(1.6).timeout.connect(func(): Sfx.play("build", -4.0))
 	for c in get_tree().get_nodes_in_group(&"point_clouds"):
 		var cloud := c as PointCloud
 		cloud.create_tween().tween_property(cloud, "gather", 0.0, 10.0)
@@ -202,6 +206,7 @@ func _intro_release() -> void:
 
 
 func _end_intro() -> void:
+	Sfx.music(true)
 	intro = Intro.NONE
 	player.camera.current = true
 	_env.fog_density = 1.0
@@ -617,6 +622,7 @@ func _unhandled_input(event: InputEvent) -> void:
 			else:
 				target.reassemble(2.0)
 		elif event.is_action_pressed("explode"):
+			Sfx.play("explode", -2.0)
 			target.explode_pulse(1.2, 1.4)
 		elif event.is_action_pressed("vibrate"):
 			target.vibrate_amplitude = 0.0 if target.vibrate_amplitude > 0.0 else 0.025
@@ -773,6 +779,7 @@ func _update_bullets(delta: float) -> void:
 ## Glass: a small clean hole where the shot went through, a ragged ring of
 ## shards knocked out around it, and cracks running outwards.
 func _shatter(cloud: PointCloud, hit: Vector3, dir: Vector3, power: float) -> void:
+	Sfx.play("glass", -2.0, randf_range(0.9, 1.1))
 	var tough := maxf(cloud.element.hardness, 0.05)
 	cloud.carve(hit, 0.11 * power, 2.0, 0.2, dir * 1.2)          # the hole (carve divides by hardness)
 	cloud.carve(hit, 0.3 * power, 0.9, 0.95, dir * 0.5)          # shards around it
@@ -798,6 +805,7 @@ func _apply_hit(cloud: PointCloud, body: CollisionObject3D, hit: Vector3, dir: V
 	if cloud.element != null and cloud.element.shatters:
 		_shatter(cloud, hit, dir, power)
 	elif breaks:
+		Sfx.play("stone", 0.0, randf_range(0.85, 1.1))
 		# The blast is centred a little inside the surface, so the chips are
 		# thrown back out towards the shooter: a main blast and a scatter of
 		# pellets around it, wide and light from afar, tight up close.
@@ -813,6 +821,7 @@ func _apply_hit(cloud: PointCloud, body: CollisionObject3D, hit: Vector3, dir: V
 			cloud.carve(hit + inset + off, 0.14 * power, force * 0.85, 0.5, kick)
 	else:
 		cloud.impact(hit, 0.035 * power, 5.0, 0.3, 4.0)
+		Sfx.play("thud", -6.0, randf_range(0.9, 1.1))
 	# Close-range hits jolt the view.
 	_hit_shake = maxf(_hit_shake, 0.03 * (power - 0.9))
 	if is_instance_valid(body) and body.has_meta("on_hit"):
@@ -835,6 +844,7 @@ func _sphere_target(cloud: PointCloud) -> Callable:
 
 
 func morph_target() -> void:
+	Sfx.play("morph", -3.0)
 	var body := target_body
 	if not body.has_meta("shapes"):
 		# Anything else morphs into a sphere and back to its own shape.
@@ -874,6 +884,7 @@ func _build_hud() -> void:
 		"F7 atom blending on/off · F8 square / round atoms · Backspace restore everything · Esc pause",
 	])
 	layer.add_child(_info)
+	_info.visible = false    # the on-screen help and stats are off
 	_status = Label.new()
 	_status.anchor_left = 1.0
 	_status.anchor_right = 1.0
@@ -883,6 +894,7 @@ func _build_hud() -> void:
 	_status.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	_status.add_theme_color_override("font_shadow_color", Color.BLACK)
 	layer.add_child(_status)
+	_status.visible = false
 	var build := Label.new()
 	var v := _read_version()
 	build.text = "build %s" % str(v.get("commit", "dev")).substr(0, 7)
