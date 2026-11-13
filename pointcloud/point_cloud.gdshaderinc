@@ -816,9 +816,10 @@ void vertex() {
 		vec3 orb = perp * cos(ang) + cross(ax, perp) * sin(ang);
 		// Its surface heaves slowly (broad lumps that travel round it), so it
 		// reads as a living, three-dimensional thing and not a flat disc.
-		float heave = 1.0 + 0.16 * flow(orb * 1.6, cloud_time * 0.9).x + 0.07 * flow(orb * 3.7, cloud_time * 1.6).y;
-		vec3 sing = orb * gather_radius * pow(hash01(gk + 3u), 0.6) * heave
-				+ flow(orb * 3.0 + seed, cloud_time * 1.2) * gather_radius * 0.13
+		float heave = 1.0 + 0.13 * flow(orb * 1.6, cloud_time * 0.9).x + 0.04 * flow(orb * 3.2, cloud_time * 1.4).y;
+		// (Most atoms sit near the surface and neighbours move together, so the
+		// outline is clean, not fuzzy.)
+		vec3 sing = orb * gather_radius * pow(hash01(gk + 3u), 0.22) * heave
 				+ rand_dir(gk + uint(cloud_time * 24.0) * 7919u) * gather_radius * 0.7 * gather_agitate;
 		float x = 1.0 - gather;
 
