@@ -812,10 +812,13 @@ void vertex() {
 		// agitation makes it shake.
 		vec3 ax = rand_dir(gk);
 		vec3 perp = normalize(cross(ax, rand_dir(gk + 5u)) + vec3(1e-5));
-		float ang = cloud_time * (0.5 + 1.2 * hash01(gk + 9u)) + seed * TAU;
+		float ang = cloud_time * (0.8 + 2.0 * hash01(gk + 9u)) + seed * TAU;
 		vec3 orb = perp * cos(ang) + cross(ax, perp) * sin(ang);
-		vec3 sing = orb * gather_radius * pow(hash01(gk + 3u), 0.6)
-				+ flow(orb * 3.0 + seed, cloud_time * 0.8) * gather_radius * 0.08
+		// Its surface heaves slowly (broad lumps that travel round it), so it
+		// reads as a living, three-dimensional thing and not a flat disc.
+		float heave = 1.0 + 0.16 * flow(orb * 1.6, cloud_time * 0.9).x + 0.07 * flow(orb * 3.7, cloud_time * 1.6).y;
+		vec3 sing = orb * gather_radius * pow(hash01(gk + 3u), 0.6) * heave
+				+ flow(orb * 3.0 + seed, cloud_time * 1.2) * gather_radius * 0.13
 				+ rand_dir(gk + uint(cloud_time * 24.0) * 7919u) * gather_radius * 0.7 * gather_agitate;
 		float x = 1.0 - gather;
 
@@ -924,6 +927,10 @@ void vertex() {
 		// (A soft pale grey, not pure white: it keeps its shading in the light.)
 		c = vec4(mix(vec3(0.7, 0.72, 0.82), c.rgb, own), c.a * own);
 		// The ball glows a little (warm), more when it is disturbed.
+		// In the ball, atoms are shaded by where they sit on it (lit from above
+		// and to one side), which gives it roundness.
+		float in_ball = 1.0 - smoothstep(0.0, 0.03, x);
+		c.rgb *= mix(1.0, 0.55 + 0.6 * clamp(dot(orb, normalize(vec3(-0.35, 0.8, 0.5))) * 0.5 + 0.5, 0.0, 1.0), in_ball);
 		float heat = gather_heat * (1.0 - smoothstep(0.0, 0.05, x));
 		glow += heat * 0.15;
 	}
